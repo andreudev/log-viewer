@@ -11,4 +11,6 @@ export interface LogEntry {
   message: string;
   raw: string;
   deltaTimeMs?: number;
+  originFile?: string;
+  customBadge?: string;
 }

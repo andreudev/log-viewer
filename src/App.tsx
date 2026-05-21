@@ -9,6 +9,11 @@ import { highlightJson } from './domain/formatting/highlightJson';
 import { highlightXml } from './domain/formatting/highlightXml';
 import { parseTimestamp } from './domain/parsing/parseTimestamp';
 
+// Upgrades Premium
+import { useKeyboardShortcuts } from './presentation/hooks/useKeyboardShortcuts';
+import { AnalyticsDashboard } from './presentation/components/AnalyticsDashboard';
+import { highlightHtmlText } from './domain/formatting/highlightHtmlText';
+
 const PAGE_SIZE = 200;
 const LOG_LEVELS: LogLevel[] = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'REQ', 'RESP'];
 const LEVEL_META: Record<string, { color: string }> = {
@@ -20,6 +25,24 @@ const LEVEL_META: Record<string, { color: string }> = {
   REQ:   { color: '170, 30%, 48%' },
   RESP:  { color: '50, 35%, 55%' }
 };
+
+interface PromotionRule {
+  id: string;
+  pattern: string;
+  targetLevel: LogLevel;
+  customBadge: string;
+  enabled: boolean;
+}
+
+const DEFAULT_RULES: PromotionRule[] = [
+  {
+    id: '1',
+    pattern: 'NO EXISTEN PRODUCTOS ASOCIADOS',
+    targetLevel: 'WARN',
+    customBadge: 'QA Alert',
+    enabled: true
+  }
+];
 
 function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
@@ -51,6 +74,19 @@ function highlightText(text: string, search: string, isRegex: boolean): React.Re
   } catch {
     return text;
   }
+}
+
+function getFileColorStyle(fileName: string): React.CSSProperties {
+  let hash = 0;
+  for (let i = 0; i < fileName.length; i++) {
+    hash = fileName.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const hue = Math.abs(hash) % 360;
+  return {
+    color: `hsl(${hue}, 45%, 65%)`,
+    borderColor: `hsla(${hue}, 45%, 65%, 0.35)`,
+    backgroundColor: `hsla(${hue}, 45%, 65%, 0.08)`
+  };
 }
 
 function runDiagnosis(msg: string): string | null {
@@ -201,7 +237,6 @@ function computeDiff(textA: string, textB: string): { left: DiffLine[]; right: D
 export function App() {
   const [files, setFiles] = useState<LogFileMeta[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
-  const [activeFile, setActiveFile] = useState<LogFileMeta | null>(null);
   const [parsedLogs, setParsedLogs] = useState<LogEntry[]>([]);
   const [filters, setFilters] = useState<FilterState>({
     activeLevels: defaultLevels(), activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null, correlationId: null
@@ -213,22 +248,52 @@ export function App() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark-theme');
 
-  const [pinnedIds, setPinnedIds] = useState<Set<number>>(new Set());
+  // Upgrades premium states
+  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<Record<string, string>>({});
+  const [activeTab, setActiveTab] = useState<'feed' | 'metrics'>('feed');
+  const [isRulesModalOpen, setIsRulesModalOpen] = useState(false);
+  const [rulesJsonInput, setRulesJsonInput] = useState('');
+  const [jsonError, setJsonError] = useState<string | null>(null);
 
-  const updatePinnedIdsForFile = (fileName: string, updater: (prev: Set<number>) => Set<number>) => {
-    setPinnedIds(prev => {
-      const next = updater(prev);
-      try {
-        const pinsMapRaw = localStorage.getItem('pinnedLogsMap') || '{}';
-        const pinsMap = JSON.parse(pinsMapRaw);
-        pinsMap[fileName] = Array.from(next);
-        localStorage.setItem('pinnedLogsMap', JSON.stringify(pinsMap));
-      } catch (e) {
-        console.error("Error saving pins to localStorage", e);
+  const [rules, setRules] = useState<PromotionRule[]>(() => {
+    try {
+      const saved = localStorage.getItem('promotionRules');
+      if (saved) {
+        return JSON.parse(saved);
       }
+    } catch (e) {
+      console.error("Error loading rules from localStorage", e);
+    }
+    return DEFAULT_RULES;
+  });
+
+  const [pinnedKeys, setPinnedKeys] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('pinnedKeys');
+      if (saved) {
+        return new Set(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error("Error loading pinnedKeys", e);
+    }
+    return new Set();
+  });
+
+  const togglePin = useCallback((log: LogEntry) => {
+    const key = `${log.originFile || 'upload'}::${log.originalId || log.id}`;
+    setPinnedKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      localStorage.setItem('pinnedKeys', JSON.stringify(Array.from(next)));
       return next;
     });
-  };
+  }, []);
+
   const [compareQueue, setCompareQueue] = useState<LogEntry[]>([]);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
   const [exportSuccess, setExportSuccess] = useState(false);
@@ -252,35 +317,123 @@ export function App() {
 
   useEffect(() => { document.body.className = theme; localStorage.setItem('theme', theme); }, [theme]);
 
+  // Save rules
+  useEffect(() => {
+    localStorage.setItem('promotionRules', JSON.stringify(rules));
+  }, [rules]);
+
+  // Load and merge logic
+  const loadAndMergeFiles = useCallback(async (fileNames: string[], uploaded: Record<string, string>, currentRules: PromotionRule[]) => {
+    if (fileNames.length === 0) {
+      setParsedLogs([]);
+      return;
+    }
+    
+    try {
+      // 1. Fetch all contents in parallel
+      const contents = await Promise.all(
+        fileNames.map(async name => {
+          if (uploaded[name]) {
+            return { name, content: uploaded[name] };
+          }
+          const content = await fetchFileContent(name);
+          return { name, content };
+        })
+      );
+
+      // 2. Parse and assign originalId, originFile
+      let allEntries: LogEntry[] = [];
+      contents.forEach(({ name, content }) => {
+        const parsed = parseLogs(content);
+        parsed.forEach(entry => {
+          entry.originFile = name;
+          entry.originalId = entry.id; // Preserve original file ID
+        });
+        allEntries = allEntries.concat(parsed);
+      });
+
+      // 3. Apply promotion rules
+      allEntries.forEach(entry => {
+        for (const rule of currentRules) {
+          if (rule.enabled && entry.message.includes(rule.pattern)) {
+            entry.level = rule.targetLevel;
+            entry.customBadge = rule.customBadge;
+            break; // Apply first matching rule
+          }
+        }
+      });
+
+      // 4. Sort chronologically
+      const parsedDates = new Map<number, number>();
+      allEntries.forEach((e, idx) => {
+        const d = parseTimestamp(e.timestamp);
+        if (d) {
+          parsedDates.set(idx, d.getTime());
+        }
+      });
+
+      allEntries.sort((a, b) => {
+        const indexA = allEntries.indexOf(a);
+        const indexB = allEntries.indexOf(b);
+        const timeA = parsedDates.get(indexA) || 0;
+        const timeB = parsedDates.get(indexB) || 0;
+        if (timeA !== timeB) return timeA - timeB;
+        return indexA - indexB;
+      });
+
+      // 5. Reassign global sequence id (1 to N)
+      allEntries.forEach((entry, idx) => {
+        entry.id = idx + 1;
+      });
+
+      // 6. Calculate deltas chronologically per correlationId
+      const withDeltas = calculateDeltas(allEntries);
+
+      setParsedLogs(withDeltas);
+    } catch (error) {
+      console.error("Error loading and merging files:", error);
+    }
+  }, []);
+
+  // Sync loaded logs when files, uploaded files, or rules change
+  useEffect(() => {
+    loadAndMergeFiles(selectedFiles, uploadedFiles, rules);
+  }, [selectedFiles, uploadedFiles, rules, loadAndMergeFiles]);
+
+  // Initial load
   useEffect(() => {
     setLoadingFiles(true);
     fetchFiles().then(async (f) => {
       setFiles(f);
       setLoadingFiles(false);
       
-      const lastActiveName = localStorage.getItem('activeFileName');
-      if (lastActiveName) {
-        const found = f.find(file => file.name === lastActiveName);
-        if (found) {
-          try {
-            const content = await fetchFileContent(found.name);
-            const parsed = parseLogs(content);
-            const withDeltas = calculateDeltas(parsed);
-            setParsedLogs(withDeltas);
-            setActiveFile(found);
-            
-            const pinsMapRaw = localStorage.getItem('pinnedLogsMap');
-            if (pinsMapRaw) {
-              const pinsMap = JSON.parse(pinsMapRaw);
-              const filePins = pinsMap[found.name];
-              if (Array.isArray(filePins)) {
-                setPinnedIds(new Set(filePins));
-              }
-            }
-          } catch (e) {
-            console.error("Error loading persisted file content", e);
+      let initialSelected: string[] = [];
+      try {
+        const saved = localStorage.getItem('selectedFiles');
+        if (saved) {
+          initialSelected = JSON.parse(saved);
+        }
+      } catch (e) {
+        console.error("Error loading selectedFiles from localStorage", e);
+      }
+
+      if (initialSelected.length === 0) {
+        const lastActiveName = localStorage.getItem('activeFileName');
+        if (lastActiveName) {
+          const found = f.find(file => file.name === lastActiveName);
+          if (found) {
+            initialSelected = [found.name];
           }
         }
+      }
+
+      if (initialSelected.length === 0 && f.length > 0) {
+        initialSelected = [f[0].name];
+      }
+
+      if (initialSelected.length > 0) {
+        setSelectedFiles(initialSelected);
+        localStorage.setItem('selectedFiles', JSON.stringify(initialSelected));
       }
     });
   }, []);
@@ -297,63 +450,51 @@ export function App() {
   const pageLogs = filteredLogs.slice(pageStart, pageStart + PAGE_SIZE);
   const activeDiagnosis = activeLog ? runDiagnosis(activeLog.message) : null;
 
-  const handleFileClick = async (file: LogFileMeta) => {
-    setActiveFile(file);
-    localStorage.setItem('activeFileName', file.name);
-    try {
-      const pinsMapRaw = localStorage.getItem('pinnedLogsMap');
-      if (pinsMapRaw) {
-        const pinsMap = JSON.parse(pinsMapRaw);
-        const filePins = pinsMap[file.name];
-        if (Array.isArray(filePins)) {
-          setPinnedIds(new Set(filePins));
-        } else {
-          setPinnedIds(new Set());
-        }
+  const handleFileCheckboxToggle = useCallback((fileName: string) => {
+    setSelectedFiles(prev => {
+      let next: string[];
+      if (prev.includes(fileName)) {
+        next = prev.filter(f => f !== fileName);
       } else {
-        setPinnedIds(new Set());
+        next = [...prev, fileName];
       }
-    } catch (e) {
-      console.error("Error restoring pins in handleFileClick", e);
-      setPinnedIds(new Set());
-    }
-
-    const content = await fetchFileContent(file.name);
-    const parsed = parseLogs(content);
-    const withDeltas = calculateDeltas(parsed);
-    setParsedLogs(withDeltas);
+      localStorage.setItem('selectedFiles', JSON.stringify(next));
+      return next;
+    });
     setFilters(p => ({ ...p, activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null, correlationId: null, activeLevels: defaultLevels() }));
-    setSortColumn(null); setSortDirection('asc'); setCurrentPage(1); setActiveLog(null); setIsDrawerOpen(false);
-  };
+    setCurrentPage(1);
+    setActiveLog(null);
+    setIsDrawerOpen(false);
+  }, []);
+
+  const handleFileSelectOnly = useCallback((fileName: string) => {
+    setSelectedFiles([fileName]);
+    localStorage.setItem('selectedFiles', JSON.stringify([fileName]));
+    localStorage.setItem('activeFileName', fileName);
+    setFilters(p => ({ ...p, activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null, correlationId: null, activeLevels: defaultLevels() }));
+    setCurrentPage(1);
+    setActiveLog(null);
+    setIsDrawerOpen(false);
+  }, []);
 
   const handleFileUpload = useCallback((file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       const content = e.target?.result as string;
       if (!content) return;
-      setActiveFile({ name: file.name, sizeBytes: file.size, modifiedAt: new Date().toISOString(), createdAt: new Date().toISOString() });
-      localStorage.setItem('activeFileName', file.name);
-      try {
-        const pinsMapRaw = localStorage.getItem('pinnedLogsMap');
-        if (pinsMapRaw) {
-          const pinsMap = JSON.parse(pinsMapRaw);
-          const filePins = pinsMap[file.name];
-          if (Array.isArray(filePins)) {
-            setPinnedIds(new Set(filePins));
-          } else {
-            setPinnedIds(new Set());
-          }
-        } else {
-          setPinnedIds(new Set());
-        }
-      } catch (e) {
-        console.error("Error restoring pins in handleFileUpload", e);
-        setPinnedIds(new Set());
-      }
+      
+      setUploadedFiles(prev => {
+        const next = { ...prev, [file.name]: content };
+        return next;
+      });
 
-      const parsed = parseLogs(content);
-      const withDeltas = calculateDeltas(parsed);
-      setParsedLogs(withDeltas);
+      setSelectedFiles(prev => {
+        const next = prev.includes(file.name) ? prev : [...prev, file.name];
+        localStorage.setItem('selectedFiles', JSON.stringify(next));
+        return next;
+      });
+      
+      localStorage.setItem('activeFileName', file.name);
       setFilters(p => ({ ...p, activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null, correlationId: null, activeLevels: defaultLevels() }));
       setSortColumn(null); setSortDirection('asc'); setCurrentPage(1); setActiveLog(null); setIsDrawerOpen(false);
     };
@@ -408,12 +549,101 @@ ${codeBlock}
     setCurrentPage(1);
   }, [filters.activeLevels]);
 
+  const openRulesModal = () => {
+    setRulesJsonInput(JSON.stringify(rules, null, 2));
+    setJsonError(null);
+    setIsRulesModalOpen(true);
+  };
+
+  const handleSaveRulesJson = () => {
+    try {
+      const parsed = JSON.parse(rulesJsonInput);
+      if (!Array.isArray(parsed)) {
+        throw new Error("El JSON debe ser un arreglo de reglas.");
+      }
+      parsed.forEach((r, idx) => {
+        if (!r.pattern || !r.targetLevel || !r.customBadge) {
+          throw new Error(`La regla en la posición ${idx} le faltan campos obligatorios (pattern, targetLevel, customBadge).`);
+        }
+      });
+      setRules(parsed);
+      setJsonError(null);
+      setIsRulesModalOpen(false);
+    } catch (e: any) {
+      setJsonError(e.message || "JSON inválido.");
+    }
+  };
+
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+
+  // Vim & Gmail like Keyboard Shortcuts hook
+  useKeyboardShortcuts({
+    focusedIndex,
+    setFocusedIndex,
+    maxIndex: filteredLogs.length,
+    onSelectRow: (idx) => {
+      const log = filteredLogs[idx];
+      if (log) {
+        setActiveLog(log);
+        setIsDrawerOpen(true);
+      }
+    },
+    onPinRow: (idx) => {
+      const log = filteredLogs[idx];
+      if (log) {
+        togglePin(log);
+      }
+    },
+    onCompareRow: (idx) => {
+      const log = filteredLogs[idx];
+      if (log) {
+        setCompareQueue(prev => {
+          const exists = prev.some(c => c.id === log.id);
+          if (exists) {
+            return prev.filter(c => c.id !== log.id);
+          } else {
+            if (prev.length >= 2) return prev;
+            return [...prev, log];
+          }
+        });
+      }
+    },
+    onSearchFocus: () => {
+      const searchInput = document.getElementById('search-input');
+      if (searchInput) {
+        searchInput.focus();
+        (searchInput as HTMLInputElement).select();
+      }
+    },
+    onCloseAll: () => {
+      setIsDrawerOpen(false);
+      setIsCompareModalOpen(false);
+    },
+    isDrawerOpen,
+    isCompareModalOpen
+  });
+
+  // Handle focus scrolling
+  useEffect(() => {
+    if (focusedIndex !== null) {
+      const activeElement = filteredLogs[focusedIndex];
+      if (activeElement) {
+        const row = document.getElementById(`log-row-${activeElement.id}`);
+        if (row) {
+          row.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+        }
+      }
+    }
+  }, [focusedIndex, filteredLogs]);
+
   const KPI_CARDS = [
-    { icon: 'receipt_long', label: 'Logs Parseados', value: stats.total, sub: activeFile ? activeFile.name : 'Ningún archivo cargado', cls: 'blue' },
+    { icon: 'receipt_long', label: 'Logs Parseados', value: stats.total, sub: selectedFiles.length > 0 ? `${selectedFiles.length} archivos seleccionados` : 'Ningún archivo', cls: 'blue' },
     { icon: 'error_outline', label: 'Errores Detectados', value: stats.errorCount, sub: stats.total ? `${((stats.errorCount / stats.total) * 100).toFixed(1)}% del total` : '0%', cls: 'red' },
     { icon: 'warning_amber', label: 'Advertencias (Warn)', value: stats.warnCount, sub: 'Alertas en ejecución', cls: 'yellow' },
     { icon: 'dns', label: 'Servicios Únicos', value: stats.uniqueServices, sub: `${stats.uniqueServices} endpoints`, cls: 'purple' }
   ];
+
+  const isMultiFileActive = selectedFiles.length > 1;
 
   return (
     <div className={`app-container ${theme}`}>
@@ -433,18 +663,55 @@ ${codeBlock}
           </div>
           <div className="files-list">
             {loadingFiles ? <div className="zero-state"><div className="loader-spinner"></div><p>Cargando archivos...</p></div>
-            : files.length === 0 ? <div className="zero-state"><p>No se encontraron logs (.log/.txt) en la carpeta.</p></div>
-            : files.map(file => (
-              <button key={file.name} className={`file-item ${activeFile?.name === file.name ? 'active' : ''}`} onClick={() => handleFileClick(file)}>
-                <span className="material-icons-round file-icon">insert_drive_file</span>
-                <div className="file-details">
-                  <span className="file-name" title={file.name}>{file.name}</span>
-                  <div className="file-meta"><span>{(file.sizeBytes / 1024).toFixed(1)} KB</span><span> • </span><span>{new Date(file.modifiedAt).toLocaleDateString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span></div>
-                </div>
-              </button>
-            ))}
+            : files.length === 0 && Object.keys(uploadedFiles).length === 0 ? <div className="zero-state"><p>No se encontraron logs (.log/.txt) en la carpeta.</p></div>
+            : (() => {
+                const allFiles = [...files];
+                Object.keys(uploadedFiles).forEach(name => {
+                  if (!allFiles.some(f => f.name === name)) {
+                    allFiles.push({
+                      name,
+                      sizeBytes: uploadedFiles[name].length,
+                      modifiedAt: new Date().toISOString(),
+                      createdAt: new Date().toISOString()
+                    });
+                  }
+                });
+
+                return allFiles.map(file => {
+                  const isChecked = selectedFiles.includes(file.name);
+                  return (
+                    <div 
+                      key={file.name} 
+                      className={`file-item-row ${isChecked ? 'active' : ''}`}
+                    >
+                      <label className="file-checkbox-label" title="Seleccionar para combinar">
+                        <input 
+                          type="checkbox" 
+                          checked={isChecked}
+                          onChange={() => handleFileCheckboxToggle(file.name)} 
+                        />
+                      </label>
+                      <button 
+                        className="file-item-btn" 
+                        onClick={() => handleFileSelectOnly(file.name)}
+                        title="Ver solo este archivo"
+                      >
+                        <span className="material-icons-round file-icon">insert_drive_file</span>
+                        <div className="file-details">
+                          <span className="file-name" title={file.name}>{file.name}</span>
+                          <div className="file-meta">
+                            <span>{(file.sizeBytes / 1024).toFixed(1)} KB</span>
+                          </div>
+                        </div>
+                      </button>
+                    </div>
+                  );
+                });
+              })()
+            }
           </div>
         </div>
+        
         <div className="sidebar-section drag-drop-section">
           <div className="section-title"><span>ANALIZAR OTROS ARCHIVOS</span></div>
           <div className="drop-zone" onClick={() => document.getElementById('file-input')?.click()}
@@ -458,34 +725,103 @@ ${codeBlock}
           </div>
         </div>
 
-        {pinnedIds.size > 0 && (
+        {/* Sidebar Rules Section */}
+        <div className="sidebar-section" style={{ flex: '0 0 auto', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
+          <div className="section-title">
+            <span>REGLAS DE ALERTA QA</span>
+            <button className="icon-button" title="Editar JSON" onClick={openRulesModal}>
+              <span className="material-icons-round">edit</span>
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
+            {rules.map(rule => (
+              <div 
+                key={rule.id}
+                style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'space-between',
+                  background: 'rgba(0,0,0,0.15)',
+                  padding: '6px 8px',
+                  borderRadius: '4px',
+                  border: '1px solid var(--border-color)'
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1, marginRight: '8px' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={rule.pattern}>
+                    {rule.pattern}
+                  </span>
+                  <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>
+                    Elevar a {rule.targetLevel}
+                  </span>
+                </div>
+                <label className="toggle-switch">
+                  <input 
+                    type="checkbox" 
+                    checked={rule.enabled} 
+                    onChange={() => {
+                      setRules(prev => prev.map(r => r.id === rule.id ? { ...r, enabled: !r.enabled } : r));
+                    }} 
+                  />
+                  <span className="slider"></span>
+                </label>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Persisted & Unified Pinned list */}
+        {pinnedKeys.size > 0 && (
           <div className="sidebar-section pinned-section">
             <div className="section-title">
-              <span>LOGS FIJADOS ({pinnedIds.size})</span>
+              <span>LOGS FIJADOS ({pinnedKeys.size})</span>
               <button 
                 className="icon-button compact-btn" 
                 title="Limpiar todos los pines"
                 onClick={() => {
-                  if (activeFile) {
-                    updatePinnedIdsForFile(activeFile.name, () => new Set());
-                  } else {
-                    setPinnedIds(new Set());
-                  }
+                  setPinnedKeys(new Set());
+                  localStorage.removeItem('pinnedKeys');
                 }}
               >
                 <span className="material-icons-round" style={{ fontSize: 14 }}>delete_sweep</span>
               </button>
             </div>
             <div className="pinned-list">
-              {Array.from(pinnedIds).map(id => {
-                const log = parsedLogs.find(l => l.id === id);
-                if (!log) return null;
+              {Array.from(pinnedKeys).map(key => {
+                const [originFile, originalIdStr] = key.split('::');
+                const originalId = parseInt(originalIdStr, 10);
+                const log = parsedLogs.find(l => l.originFile === originFile && l.originalId === originalId);
+                if (!log) {
+                  return (
+                    <div key={key} className="pinned-item" style={{ opacity: 0.5 }}>
+                      <div className="pinned-item-header">
+                        <span className="pinned-badge" style={{ color: 'var(--text-muted)' }}>INACTIVO</span>
+                        <button 
+                          className="pinned-remove-btn" 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPinnedKeys(prev => {
+                              const next = new Set(prev);
+                              next.delete(key);
+                              localStorage.setItem('pinnedKeys', JSON.stringify(Array.from(next)));
+                              return next;
+                            });
+                          }}
+                        >
+                          <span className="material-icons-round">close</span>
+                        </button>
+                      </div>
+                      <div className="pinned-msg" title={`Archivo: ${originFile}`}>{originFile} (No seleccionado)</div>
+                    </div>
+                  );
+                }
+
                 const lc = LEVEL_META[log.level]?.color || '200, 10%, 50%';
                 const time = log.timestamp.split(' ')[1] || log.timestamp;
                 const shortMsg = log.message.trim().slice(0, 45) + (log.message.length > 45 ? '...' : '');
                 return (
                   <div 
-                    key={id} 
+                    key={key} 
                     className={`pinned-item level-${log.level.toLowerCase()}`}
                     onClick={() => {
                       setActiveLog(log);
@@ -499,25 +835,20 @@ ${codeBlock}
                     }}
                   >
                     <div className="pinned-item-header">
-                      <span className="pinned-badge" style={{ color: `hsl(${lc})`, background: `hsla(${lc},0.1)` }}>{log.level}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
+                        {log.originFile && (
+                          <span className="pinned-badge" style={{ fontSize: '8px', color: 'var(--text-muted)', border: '1px solid var(--border-color)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '50px' }}>
+                            {log.originFile}
+                          </span>
+                        )}
+                        <span className="pinned-badge" style={{ color: `hsl(${lc})`, background: `hsla(${lc},0.1)` }}>{log.level}</span>
+                      </div>
                       <span className="pinned-time">{time}</span>
                       <button 
                         className="pinned-remove-btn" 
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (activeFile) {
-                            updatePinnedIdsForFile(activeFile.name, prev => {
-                              const next = new Set(prev);
-                              next.delete(id);
-                              return next;
-                            });
-                          } else {
-                            setPinnedIds(prev => {
-                              const next = new Set(prev);
-                              next.delete(id);
-                              return next;
-                            });
-                          }
+                          togglePin(log);
                         }}
                       >
                         <span className="material-icons-round">close</span>
@@ -557,7 +888,7 @@ ${codeBlock}
           ))}
         </section>
 
-        {parsedLogs.length > 0 && (
+        {parsedLogs.length > 0 && activeTab === 'feed' && (
           <section className="distribution-section">
             <div className="distribution-header">
               <span>DISTRIBUCIÓN POR NIVELES</span>
@@ -580,7 +911,7 @@ ${codeBlock}
           </section>
         )}
 
-        {parsedLogs.length > 0 && (
+        {parsedLogs.length > 0 && activeTab === 'feed' && (
           <section className="filter-panel">
             {filters.correlationId && (
               <div className="flow-isolation-banner">
@@ -610,7 +941,6 @@ ${codeBlock}
                   onClick={() => { setFilters(p => ({ ...p, activeLevels: defaultLevels() })); setCurrentPage(1); }}><span>TODOS</span></button>
                 {LOG_LEVELS.map(level => {
                   const active = filters.activeLevels.has(level);
-                  const meta = LEVEL_META[level];
                   return <button key={level} className={`level-pill level-${level.toLowerCase()}-pill ${active ? 'active' : ''}`}
                     onClick={() => handleLevelClick(level)}>{level}</button>;
                 })}
@@ -633,7 +963,7 @@ ${codeBlock}
                     onChange={e => { setFilters(p => ({ ...p, dateTo: e.target.value ? new Date(e.target.value) : null })); setCurrentPage(1); }} />
                   {(filters.dateFrom || filters.dateTo) && <button id="btn-clear-dates" className="secondary-button" onClick={() => { setFilters(p => ({ ...p, dateFrom: null, dateTo: null })); setCurrentPage(1); }}><span className="material-icons-round">close</span></button>}
                 </div>
-                <button id="btn-reset-filters" className="secondary-button" onClick={() => { setFilters({ activeLevels: defaultLevels(), activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null }); setSortColumn(null); setSortDirection('asc'); setCurrentPage(1); }}>
+                <button id="btn-reset-filters" className="secondary-button" onClick={() => { setFilters({ activeLevels: defaultLevels(), activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null, correlationId: null }); setSortColumn(null); setSortDirection('asc'); setCurrentPage(1); }}>
                   <span className="material-icons-round">restart_alt</span> Reestablecer
                 </button>
               </div>
@@ -642,127 +972,193 @@ ${codeBlock}
         )}
 
         <section className="logs-feed-section">
-          <div className="feed-header">
-            <div className="feed-info">
-              <span className="material-icons-round">wysiwyg</span>
-              <span>{filteredLogs.length > 0 ? `Visualizando ${filteredLogs.length === parsedLogs.length ? `${filteredLogs.length} registros` : `${filteredLogs.length} de ${parsedLogs.length} registros (filtrado)`}` : 'Visualizando 0 registros'}</span>
-            </div>
-            <div className="feed-actions">
-              <label className="toggle-switch">
-                <input type="checkbox" defaultChecked onChange={e => document.getElementById('feed-viewport')?.classList.toggle('wrap-lines', e.target.checked)} />
-                <span className="slider"></span>
-                <span className="toggle-label">Ajustar líneas</span>
-              </label>
-            </div>
+          {/* Tab switches for Feed vs Metrics */}
+          <div className="tab-container">
+            <button 
+              className={`tab-btn ${activeTab === 'feed' ? 'active' : ''}`}
+              onClick={() => setActiveTab('feed')}
+            >
+              <span className="material-icons-round" style={{ fontSize: '15px' }}>feed</span>
+              Feed de Logs
+            </button>
+            <button 
+              className={`tab-btn ${activeTab === 'metrics' ? 'active' : ''}`}
+              onClick={() => setActiveTab('metrics')}
+            >
+              <span className="material-icons-round" style={{ fontSize: '15px' }}>insights</span>
+              Salud y Analíticas QA
+            </button>
+            <button 
+              className="tab-btn" 
+              style={{ marginLeft: 'auto', background: 'rgba(245, 158, 11, 0.05)', border: '1px solid rgba(245, 158, 11, 0.25)', color: '#f59e0b', borderRadius: '4px' }}
+              onClick={openRulesModal}
+            >
+              <span className="material-icons-round" style={{ fontSize: '15px' }}>rule</span>
+              Reglas de Alerta QA
+            </button>
           </div>
-          <div className="feed-viewport" id="feed-viewport">
-            {filteredLogs.length === 0 ? (
-              <div className="zero-state">
-                <span className="material-icons-round zero-icon">{parsedLogs.length === 0 ? 'insert_drive_file' : 'search_off'}</span>
-                <h3>{parsedLogs.length === 0 ? 'Ningún Archivo Seleccionado' : 'No se encontraron registros'}</h3>
-                <p>{parsedLogs.length === 0 ? 'Por favor, selecciona un archivo de log de la barra lateral o arrastra uno nuevo aquí para analizarlo.' : 'Ningún log coincide con tus filtros o término de búsqueda.'}</p>
+
+          {activeTab === 'feed' ? (
+            <>
+              <div className="feed-header">
+                <div className="feed-info">
+                  <span className="material-icons-round">wysiwyg</span>
+                  <span>{filteredLogs.length > 0 ? `Visualizando ${filteredLogs.length === parsedLogs.length ? `${filteredLogs.length} registros` : `${filteredLogs.length} de ${parsedLogs.length} registros (filtrado)`}` : 'Visualizando 0 registros'}</span>
+                </div>
+                <div className="feed-actions">
+                  <label className="toggle-switch">
+                    <input type="checkbox" defaultChecked onChange={e => document.getElementById('feed-viewport')?.classList.toggle('wrap-lines', e.target.checked)} />
+                    <span className="slider"></span>
+                    <span className="toggle-label">Ajustar líneas</span>
+                  </label>
+                </div>
               </div>
-            ) : (
-              <table className="logs-table">
-                <thead>
-                  <tr>
-                    <th width="4%" className="pin-header">Pin</th>
-                    {(['timestamp', 'level', 'service', 'correlationId', 'message'] as const).map(col => (
-                      <th key={col} width={col === 'timestamp' ? '14%' : col === 'level' ? '8%' : col === 'service' ? '18%' : col === 'correlationId' ? '15%' : '41%'}
-                        className={`sortable-th ${sortColumn === col ? 'sort-active' : ''}`} data-sort-key={col}
-                        onClick={() => {
-                          if (sortColumn === col) {
-                            setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
-                          } else {
-                            setSortColumn(col);
-                            setSortDirection('asc');
-                          }
-                          setCurrentPage(1);
-                        }}>
-                        {{ timestamp: 'Marca de Tiempo', level: 'Nivel', service: 'Servicio / Método', correlationId: 'ID Correlación', message: 'Mensaje / Contenido' }[col]}
-                        <span className="sort-indicator">{sortColumn === col ? (sortDirection === 'asc' ? ' ▲' : ' ▼') : ''}</span>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {pageLogs.map(log => {
-                    const lc = LEVEL_META[log.level]?.color || '200, 10%, 50%';
-                    const dateFormatted = log.timestamp.split(',')[0];
-                    const snippet = log.message.trim().replace(/\s+/g, ' ').slice(0, 120) + (log.message.length > 120 ? '...' : '');
-                    const isPinned = pinnedIds.has(log.id);
-                    return (
-                      <tr key={log.id} id={`log-row-${log.id}`} className={`${activeLog?.id === log.id ? 'active-row' : ''} ${isPinned ? 'pinned-row' : ''}`} onClick={() => { setActiveLog(log); setIsDrawerOpen(true); }}>
-                        <td onClick={(e) => {
-                          e.stopPropagation();
-                          if (activeFile) {
-                            updatePinnedIdsForFile(activeFile.name, prev => {
-                              const next = new Set(prev);
-                              if (next.has(log.id)) {
-                                next.delete(log.id);
+              <div className="feed-viewport" id="feed-viewport">
+                {filteredLogs.length === 0 ? (
+                  <div className="zero-state">
+                    <span className="material-icons-round zero-icon">{parsedLogs.length === 0 ? 'insert_drive_file' : 'search_off'}</span>
+                    <h3>{parsedLogs.length === 0 ? 'Ningún Archivo Seleccionado' : 'No se encontraron registros'}</h3>
+                    <p>{parsedLogs.length === 0 ? 'Por favor, selecciona un archivo de log de la barra lateral o arrastra uno nuevo aquí para analizarlo.' : 'Ningún log coincide con tus filtros o término de búsqueda.'}</p>
+                  </div>
+                ) : (
+                  <table className="logs-table">
+                    <thead>
+                      <tr>
+                        <th width="4%" className="pin-header">Pin</th>
+                        {(['timestamp', 'level', 'service', 'correlationId', 'message'] as const).map(col => (
+                          <th key={col} width={col === 'timestamp' ? '14%' : col === 'level' ? '12%' : col === 'service' ? '16%' : col === 'correlationId' ? '14%' : '40%'}
+                            className={`sortable-th ${sortColumn === col ? 'sort-active' : ''}`} data-sort-key={col}
+                            onClick={() => {
+                              if (sortColumn === col) {
+                                setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
                               } else {
-                                next.add(log.id);
+                                setSortColumn(col);
+                                setSortDirection('asc');
                               }
-                              return next;
-                            });
-                          }
-                        }}>
-                          <span className={`material-icons-round pin-icon ${isPinned ? 'active' : ''}`} title={isPinned ? "Quitar marcador" : "Fijar log (Marcador)"}>
-                            {isPinned ? 'push_pin' : 'push_pin'}
-                          </span>
-                        </td>
-                        <td>
-                          <div className="timestamp-cell">
-                            <span className="log-timestamp">{dateFormatted}</span>
-                            {log.deltaTimeMs !== undefined && (
-                              <span className={`latency-badge ${log.deltaTimeMs > 5000 ? 'latency-danger' : log.deltaTimeMs > 1000 ? 'latency-warning' : 'latency-normal'}`} title={`Tiempo desde el log anterior del mismo flujo: ${log.deltaTimeMs}ms`}>
-                                +{log.deltaTimeMs >= 1000 ? `${(log.deltaTimeMs / 1000).toFixed(2)}s` : `${log.deltaTimeMs}ms`}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td><span className="badge badge-outline" style={{ color: `hsl(${lc})`, borderColor: `hsla(${lc},0.4)`, background: `hsla(${lc},0.08)` }}>{log.level}</span></td>
-                        <td><div className="badge badge-service" title={log.service}>{log.service}</div></td>
-                        <td>
-                          {log.correlationId !== '-' ? (
-                            <div className="correlation-cell">
-                              <span className="badge badge-correlation" title={log.correlationId}>{log.correlationId}</span>
-                              <button 
-                                className="icon-button trace-flow-btn" 
-                                title="Aislar flujo de esta petición"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setFilters(p => ({ ...p, correlationId: log.correlationId }));
-                                  setCurrentPage(1);
-                                }}
-                              >
-                                <span className="material-icons-round" style={{ fontSize: 13 }}>filter_alt</span>
-                              </button>
-                            </div>
-                          ) : (
-                            <span style={{ color: 'var(--text-muted)' }}>-</span>
-                          )}
-                        </td>
-                        <td><div className="log-message-cell">{highlightText(snippet, filters.searchTerm, filters.isRegexSearch)}</div></td>
+                              setCurrentPage(1);
+                            }}>
+                            {{ timestamp: 'Marca de Tiempo', level: 'Nivel', service: 'Servicio / Método', correlationId: 'ID Correlación', message: 'Mensaje / Contenido' }[col]}
+                            <span className="sort-indicator">{sortColumn === col ? (sortDirection === 'asc' ? ' ▲' : ' ▼') : ''}</span>
+                          </th>
+                        ))}
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-          <div className="feed-footer">
-            <div className="pagination-info">{filteredLogs.length === 0 ? 'Mostrando registros 0-0' : `Mostrando registros ${pageStart + 1}-${Math.min(pageStart + PAGE_SIZE, filteredLogs.length)} de ${filteredLogs.length}`}</div>
-            <div className="pagination-buttons">
-              <button id="btn-prev-page" className="secondary-button" disabled={currentPage <= 1} onClick={() => { setCurrentPage(p => p - 1); document.getElementById('feed-viewport')?.scrollTo(0, 0); }}>
-                <span className="material-icons-round">chevron_left</span> Anterior
-              </button>
-              <span className="page-indicator">Página {currentPage} de {totalPages}</span>
-              <button id="btn-next-page" className="secondary-button" disabled={currentPage >= totalPages} onClick={() => { setCurrentPage(p => p + 1); document.getElementById('feed-viewport')?.scrollTo(0, 0); }}>
-                Siguiente <span className="material-icons-round">chevron_right</span>
-              </button>
+                    </thead>
+                    <tbody>
+                      {pageLogs.map(log => {
+                        const lc = LEVEL_META[log.level]?.color || '200, 10%, 50%';
+                        const dateFormatted = log.timestamp.split(',')[0];
+                        const snippet = log.message.trim().replace(/\s+/g, ' ').slice(0, 120) + (log.message.length > 120 ? '...' : '');
+                        const isPinned = pinnedKeys.has(`${log.originFile || 'upload'}::${log.originalId || log.id}`);
+                        const isFocused = focusedIndex === pageStart + pageLogs.indexOf(log);
+                        
+                        return (
+                          <tr 
+                            key={log.id} 
+                            id={`log-row-${log.id}`} 
+                            className={`${activeLog?.id === log.id ? 'active-row' : ''} ${isPinned ? 'pinned-row' : ''} ${isFocused ? 'keyboard-focused' : ''}`}
+                            onClick={() => { 
+                              setFocusedIndex(pageStart + pageLogs.indexOf(log));
+                              setActiveLog(log); 
+                              setIsDrawerOpen(true); 
+                            }}
+                          >
+                            <td onClick={(e) => {
+                              e.stopPropagation();
+                              togglePin(log);
+                            }}>
+                              <span className={`material-icons-round pin-icon ${isPinned ? 'active' : ''}`} title={isPinned ? "Quitar marcador" : "Fijar log (Marcador)"}>
+                                {isPinned ? 'push_pin' : 'push_pin'}
+                              </span>
+                            </td>
+                            <td>
+                              <div className="timestamp-cell">
+                                <span className="log-timestamp">{dateFormatted}</span>
+                                {log.deltaTimeMs !== undefined && (
+                                  <span className={`latency-badge ${log.deltaTimeMs > 5000 ? 'latency-danger' : log.deltaTimeMs > 1000 ? 'latency-warning' : 'latency-normal'}`} title={`Tiempo desde el log anterior del mismo flujo: ${log.deltaTimeMs}ms`}>
+                                    +{log.deltaTimeMs >= 1000 ? `${(log.deltaTimeMs / 1000).toFixed(2)}s` : `${log.deltaTimeMs}ms`}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+                                {log.originFile && isMultiFileActive && (
+                                  <span 
+                                    className="file-origin-badge" 
+                                    style={getFileColorStyle(log.originFile)}
+                                    title={log.originFile}
+                                  >
+                                    {log.originFile}
+                                  </span>
+                                )}
+                                {log.customBadge && (
+                                  <span className="promotion-badge" title="Severidad de nivel elevada por regla de alerta QA">
+                                    <span className="material-icons-round" style={{ fontSize: '10px' }}>notification_important</span>
+                                    {log.customBadge}
+                                  </span>
+                                )}
+                                <span className="badge badge-outline" style={{ color: `hsl(${lc})`, borderColor: `hsla(${lc},0.4)`, background: `hsla(${lc},0.08)` }}>{log.level}</span>
+                              </div>
+                            </td>
+                            <td><div className="badge badge-service" title={log.service}>{log.service}</div></td>
+                            <td>
+                              {log.correlationId !== '-' ? (
+                                <div className="correlation-cell">
+                                  <span className="badge badge-correlation" title={log.correlationId}>{log.correlationId}</span>
+                                  <button 
+                                    className="icon-button trace-flow-btn" 
+                                    title="Aislar flujo de esta petición"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setFilters(p => ({ ...p, correlationId: log.correlationId }));
+                                      setCurrentPage(1);
+                                    }}
+                                  >
+                                    <span className="material-icons-round" style={{ fontSize: 13 }}>filter_alt</span>
+                                  </button>
+                                </div>
+                              ) : (
+                                <span style={{ color: 'var(--text-muted)' }}>-</span>
+                              )}
+                            </td>
+                            <td><div className="log-message-cell">{highlightText(snippet, filters.searchTerm, filters.isRegexSearch)}</div></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+              <div className="feed-footer">
+                <div className="pagination-info">{filteredLogs.length === 0 ? 'Mostrando registros 0-0' : `Mostrando registros ${pageStart + 1}-${Math.min(pageStart + PAGE_SIZE, filteredLogs.length)} de ${filteredLogs.length}`}</div>
+                <div className="pagination-buttons">
+                  <button id="btn-prev-page" className="secondary-button" disabled={currentPage <= 1} onClick={() => { setCurrentPage(p => p - 1); document.getElementById('feed-viewport')?.scrollTo(0, 0); }}>
+                    <span className="material-icons-round">chevron_left</span> Anterior
+                  </button>
+                  <span className="page-indicator">Página {currentPage} de {totalPages}</span>
+                  <button id="btn-next-page" className="secondary-button" disabled={currentPage >= totalPages} onClick={() => { setCurrentPage(p => p + 1); document.getElementById('feed-viewport')?.scrollTo(0, 0); }}>
+                    Siguiente <span className="material-icons-round">chevron_right</span>
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="feed-viewport" style={{ padding: '20px' }}>
+              <AnalyticsDashboard 
+                logs={filteredLogs}
+                onSelectCorrelationId={(cid) => {
+                  setFilters(p => ({ ...p, correlationId: cid }));
+                  setActiveTab('feed');
+                  setCurrentPage(1);
+                }}
+                onSelectService={(service) => {
+                  setFilters(p => ({ ...p, activeService: service }));
+                  setActiveTab('feed');
+                  setCurrentPage(1);
+                }}
+              />
             </div>
-          </div>
+          )}
         </section>
       </main>
 
@@ -777,21 +1173,9 @@ ${codeBlock}
               </div>
               <div className="drawer-header-actions">
                 <button 
-                  className={`icon-button pin-drawer-btn ${pinnedIds.has(activeLog.id) ? 'active' : ''}`} 
-                  title={pinnedIds.has(activeLog.id) ? "Quitar marcador" : "Fijar log (Marcador)"}
-                  onClick={() => {
-                    if (activeFile) {
-                      updatePinnedIdsForFile(activeFile.name, prev => {
-                        const next = new Set(prev);
-                        if (next.has(activeLog.id)) {
-                          next.delete(activeLog.id);
-                        } else {
-                          next.add(activeLog.id);
-                        }
-                        return next;
-                      });
-                    }
-                  }}
+                  className={`icon-button pin-drawer-btn ${pinnedKeys.has(`${activeLog.originFile || 'upload'}::${activeLog.originalId || activeLog.id}`) ? 'active' : ''}`} 
+                  title={pinnedKeys.has(`${activeLog.originFile || 'upload'}::${activeLog.originalId || activeLog.id}`) ? "Quitar marcador" : "Fijar log (Marcador)"}
+                  onClick={() => togglePin(activeLog)}
                 >
                   <span className="material-icons-round">push_pin</span>
                 </button>
@@ -896,7 +1280,12 @@ ${codeBlock}
               {(() => {
                 const payload = formatPayload(activeLog.message);
                 if (payload.kind === 'none') return null;
-                const payloadContent = payload.kind === 'xml' ? highlightXml(payload.formatted || '') : highlightJson(payload.formatted || '');
+                
+                let payloadContent = payload.kind === 'xml' ? highlightXml(payload.formatted || '') : highlightJson(payload.formatted || '');
+                if (filters.searchTerm) {
+                  payloadContent = highlightHtmlText(payloadContent, filters.searchTerm, filters.isRegexSearch);
+                }
+                
                 return (
                   <div>
                     <div className="drawer-section-title">
@@ -1028,6 +1417,72 @@ ${codeBlock}
                   </div>
                 );
               })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isRulesModalOpen && (
+        <div className="compare-modal-overlay" style={{ zIndex: 300 }}>
+          <div className="compare-modal" style={{ maxWidth: '600px', maxHeight: '550px' }}>
+            <div className="compare-modal-header">
+              <div className="compare-modal-title">
+                <span className="material-icons-round">rule</span>
+                <h2>Editor de Reglas de Alerta QA</h2>
+              </div>
+              <button className="icon-button" onClick={() => setIsRulesModalOpen(false)}>
+                <span className="material-icons-round">close</span>
+              </button>
+            </div>
+            <div className="compare-modal-meta" style={{ display: 'block', padding: '12px 20px' }}>
+              <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
+                Define reglas para elevar automáticamente la severidad de los logs silenciosos (ej. DEBUG, INFO) a niveles críticos (ej. WARN, ERROR) cuando contienen ciertos patrones de texto.
+              </p>
+            </div>
+            <div className="compare-modal-body" style={{ flexDirection: 'column', padding: '16px', gap: '12px', background: 'var(--bg-panel)' }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <span className="meta-label">Configuración en JSON</span>
+                <textarea 
+                  value={rulesJsonInput}
+                  onChange={e => setRulesJsonInput(e.target.value)}
+                  style={{
+                    flex: 1,
+                    width: '100%',
+                    background: '#151515',
+                    color: '#d4d4d4',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '4px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '11px',
+                    padding: '10px',
+                    resize: 'none'
+                  }}
+                />
+                {jsonError && (
+                  <span style={{ fontSize: '11px', color: '#f87171', fontWeight: 600 }}>
+                    ⚠️ {jsonError}
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
+                <button 
+                  className="secondary-button" 
+                  onClick={() => {
+                    setRulesJsonInput(JSON.stringify(DEFAULT_RULES, null, 2));
+                    setJsonError(null);
+                  }}
+                >
+                  Restablecer por defecto
+                </button>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className="secondary-button" onClick={() => setIsRulesModalOpen(false)}>
+                    Cancelar
+                  </button>
+                  <button className="primary-button" onClick={handleSaveRulesJson}>
+                    Guardar Reglas
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
