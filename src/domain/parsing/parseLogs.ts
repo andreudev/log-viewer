@@ -3,7 +3,30 @@ import { LogEntry, LogLevel } from '../models/LogEntry';
 const LOG_LEVELS: LogLevel[] = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'REQ', 'RESP'];
 
 export function parseLogs(text: string): LogEntry[] {
-  const lines = text.split(/\r?\n/);
+  const rawLines = text.split(/\r?\n/);
+  const lines: string[] = [];
+  let buffer = '';
+
+  const genericNewLogDetector = /^(?:\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})|^(?:\d{1,2}\/\d{1,2}\/\d{4}\s\d{1,2}:\d{2}:\d{2})|^(?:\[\d{2}-\d{2}-\d{4}\s\d{2}:\d{2}:\d{2})/;
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const cleanLine = rawLines[i].replace(/\r$/, '');
+    const nextLine = i + 1 < rawLines.length ? rawLines[i + 1].trim() : '';
+    const nextIsNewLog = genericNewLogDetector.test(nextLine);
+
+    // Reconstruct lines split at exactly 80 characters
+    if (cleanLine.length === 80 && !nextIsNewLog) {
+      buffer += cleanLine;
+    } else {
+      buffer += cleanLine;
+      lines.push(buffer);
+      buffer = '';
+    }
+  }
+  if (buffer) {
+    lines.push(buffer);
+  }
+
   const logEntries: LogEntry[] = [];
   let currentEntry: LogEntry | null = null;
   let logCounter = 0;
@@ -11,7 +34,6 @@ export function parseLogs(text: string): LogEntry[] {
   const regexFormatA = /^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3})\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+([^\s]+)\s+\[([^\]]+)\]\s+(.*)$/;
   const regexFormatB = /^(\d{1,2}\/\d{1,2}\/\d{4}\s\d{1,2}:\d{2}:\d{2}\s(?:AM|PM))\s+-\s+([^\s]+)\s+-\s+METODO:\s+([^\s]+)\s+-\s+(INPUT|OUTPUT):\s*(.*)$/i;
   const regexFormatC = /^\[(\d{2}-\d{2}-\d{4}\s\d{2}:\d{2}:\d{2})\s+(REQ|RESP)\s+-([^\]]*)\]:\s*(.*)$/i;
-  const genericNewLogDetector = /^(?:\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})|^(?:\d{1,2}\/\d{1,2}\/\d{4}\s\d{1,2}:\d{2}:\d{2})|^(?:\[\d{2}-\d{2}-\d{4}\s\d{2}:\d{2}:\d{2})/;
 
   for (const line of lines) {
     if (line.trim() === '') continue;
@@ -46,7 +68,13 @@ export function parseLogs(text: string): LogEntry[] {
       const sType = serviceTypeMatch ? serviceTypeMatch[1] : '';
 
       let finalMessage = remainingMessage;
-      finalMessage = finalMessage.replace(/\[[^\]]+\]/g, '').replace(/^\s*:\s*/, '').trim();
+      finalMessage = finalMessage
+        .replace(/\[\s*Peticion\s+ID:\s*([^\s\]]+)\s*\]/gi, '')
+        .replace(/\[\s*Class:\s*([^\s\]]+)\s*\]/gi, '')
+        .replace(/\[\s*Endpoint:\s*([^\s\]]+)\s*\]/gi, '')
+        .replace(/\[\s*Service\s+Type:\s*([^\s\]]+)\s*\]/gi, '')
+        .replace(/^\s*:\s*/, '')
+        .trim();
 
       const urlMatch = finalMessage.match(/(?:URL llamada|URL|GET METHOD):\s*_?https?:\/\/[^\/]+\/(.*)$/i);
       if (urlMatch) {
@@ -58,10 +86,26 @@ export function parseLogs(text: string): LogEntry[] {
         serviceName = 'API Invocation';
       }
 
+      // Dynamic QA Error Elevation
+      let finalLevel = level;
+      const lowerMsg = finalMessage.toLowerCase();
+      const hasErrorKeywords = 
+        lowerMsg.includes('[aseoledb]') ||
+        lowerMsg.includes('sp_cerror') ||
+        (lowerMsg.includes('error:') && !lowerMsg.includes('error: []') && !lowerMsg.includes('error: [ ]')) ||
+        lowerMsg.includes('exception') ||
+        lowerMsg.includes('timeout') ||
+        lowerMsg.includes('cuenta no esta') ||
+        lowerMsg.includes('cuenta no está') ||
+        lowerMsg.includes('duplicate key');
+      if (hasErrorKeywords) {
+        finalLevel = 'ERROR';
+      }
+
       currentEntry = {
         id: ++logCounter,
         timestamp,
-        level,
+        level: finalLevel,
         thread,
         className,
         service: serviceName,
@@ -81,7 +125,22 @@ export function parseLogs(text: string): LogEntry[] {
       const type = matchB[4].toUpperCase();
       const content = matchB[5].trim();
 
-      const level: LogLevel = type === 'INPUT' ? 'REQ' : 'RESP';
+      let level: LogLevel = type === 'INPUT' ? 'REQ' : 'RESP';
+
+      // Dynamic QA Error Elevation
+      const lowerContent = content.toLowerCase();
+      const hasErrorKeywords = 
+        lowerContent.includes('[aseoledb]') ||
+        lowerContent.includes('sp_cerror') ||
+        (lowerContent.includes('error:') && !lowerContent.includes('error: []') && !lowerContent.includes('error: [ ]')) ||
+        lowerContent.includes('exception') ||
+        lowerContent.includes('timeout') ||
+        lowerContent.includes('cuenta no esta') ||
+        lowerContent.includes('cuenta no está') ||
+        lowerContent.includes('duplicate key');
+      if (hasErrorKeywords) {
+        level = 'ERROR';
+      }
 
       currentEntry = {
         id: ++logCounter,
@@ -101,7 +160,7 @@ export function parseLogs(text: string): LogEntry[] {
       if (currentEntry) logEntries.push(currentEntry);
 
       const timestamp = matchC[1];
-      const level = matchC[2].toUpperCase() as LogLevel;
+      let level = matchC[2].toUpperCase() as LogLevel;
       const bracketInfo = matchC[3];
       const xmlPayload = matchC[4].trim();
 
@@ -113,6 +172,24 @@ export function parseLogs(text: string): LogEntry[] {
       const xmlRootMatch = xmlPayload.match(/<([^\s>]+)/);
       if (xmlRootMatch) {
         serviceName = xmlRootMatch[1].replace(/_res$/, '').replace(/&lt;([^\s&>]+)/, '$1');
+      }
+
+      // Dynamic QA Error Elevation
+      const lowerPayload = xmlPayload.toLowerCase();
+      const hasErrorKeywords = 
+        lowerPayload.includes('[aseoledb]') ||
+        lowerPayload.includes('sp_cerror') ||
+        (lowerPayload.includes('error:') && !lowerPayload.includes('error: []') && !lowerPayload.includes('error: [ ]')) ||
+        lowerPayload.includes('exception') ||
+        lowerPayload.includes('timeout') ||
+        lowerPayload.includes('cuenta no esta') ||
+        lowerPayload.includes('cuenta no está') ||
+        lowerPayload.includes('duplicate key') ||
+        lowerPayload.includes('codigo>2') ||
+        lowerPayload.includes('ocurrio un error') ||
+        lowerPayload.includes('ocurrió un error');
+      if (hasErrorKeywords) {
+        level = 'ERROR';
       }
 
       currentEntry = {
@@ -139,14 +216,22 @@ export function parseLogs(text: string): LogEntry[] {
 
     let level: LogLevel = 'INFO';
     let serviceName = '-';
-    if (line.includes('Error:') || line.includes('SP_CERROR') || line.includes('ASEOLEDB')) {
+    let timestamp = new Date().toLocaleDateString('es-ES') + ' --';
+
+    const tsMatch = line.match(/^\[?(\d{2}[-/]\d{2}[-/]\d{4}\s\d{2}:\d{2}:\d{2})|^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})/);
+    if (tsMatch) {
+      timestamp = tsMatch[1] || tsMatch[2];
+    }
+
+    const lowerLine = line.toLowerCase();
+    if (lowerLine.includes('error:') || lowerLine.includes('sp_cerror') || lowerLine.includes('aseoledb') || lowerLine.includes('exception')) {
       level = 'ERROR';
       serviceName = 'DatabaseEngine';
     }
 
     currentEntry = {
       id: ++logCounter,
-      timestamp: new Date().toLocaleDateString('es-ES') + ' --',
+      timestamp,
       level,
       thread: 'system',
       className: 'SystemLogger',
@@ -156,7 +241,6 @@ export function parseLogs(text: string): LogEntry[] {
       raw: line
     };
   }
-
   if (currentEntry) logEntries.push(currentEntry);
   return logEntries;
 }

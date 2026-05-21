@@ -76,7 +76,11 @@ export function applyFilters(
       if (key === 'timestamp') {
         const dateA = parseTimestamp(a.timestamp);
         const dateB = parseTimestamp(b.timestamp);
-        if (dateA && dateB) return (dateA.getTime() - dateB.getTime()) * dir;
+        if (dateA && dateB) {
+          return (dateA.getTime() - dateB.getTime()) * dir;
+        }
+        if (dateA && !dateB) return -1 * dir;
+        if (!dateA && dateB) return 1 * dir;
       }
       const valA = (a[key] || '').toString().toLowerCase();
       const valB = (b[key] || '').toString().toLowerCase();

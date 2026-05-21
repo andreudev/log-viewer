@@ -24,6 +24,34 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
+function toLocalISOString(date: Date): string {
+  const tzoffset = date.getTimezoneOffset() * 60000;
+  return (new Date(date.getTime() - tzoffset)).toISOString().slice(0, 16);
+}
+
+function highlightText(text: string, search: string, isRegex: boolean): React.ReactNode {
+  if (!search) return text;
+  try {
+    let regex: RegExp;
+    if (isRegex) {
+      regex = new RegExp(`(${search})`, 'gi');
+    } else {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      regex = new RegExp(`(${escaped})`, 'gi');
+    }
+    const parts = text.split(regex);
+    return (
+      <>
+        {parts.map((part, i) =>
+          regex.test(part) ? <mark key={i} className="search-match">{part}</mark> : part
+        )}
+      </>
+    );
+  } catch {
+    return text;
+  }
+}
+
 function runDiagnosis(msg: string): string | null {
   const txt = msg.toLowerCase();
   if (txt.includes("attempt to insert duplicate key row in object") && txt.includes("unique index")) {
@@ -113,6 +141,26 @@ export function App() {
   const copyText = useCallback(async (text: string) => {
     try { await navigator.clipboard.writeText(text); } catch { console.warn('Copy failed'); }
   }, []);
+
+  const handleLevelClick = useCallback((level: LogLevel) => {
+    const isAllActive = filters.activeLevels.size === LOG_LEVELS.length;
+    let newLevels: Set<LogLevel>;
+    if (isAllActive) {
+      newLevels = new Set([level]);
+    } else {
+      newLevels = new Set(filters.activeLevels);
+      if (newLevels.has(level)) {
+        newLevels.delete(level);
+        if (newLevels.size === 0) {
+          newLevels = defaultLevels();
+        }
+      } else {
+        newLevels.add(level);
+      }
+    }
+    setFilters(p => ({ ...p, activeLevels: newLevels }));
+    setCurrentPage(1);
+  }, [filters.activeLevels]);
 
   const KPI_CARDS = [
     { icon: 'receipt_long', label: 'Logs Parseados', value: stats.total, sub: activeFile ? activeFile.name : 'Ningún archivo cargado', cls: 'blue' },
@@ -230,12 +278,12 @@ export function App() {
               <div className="level-pills">
                 <span className="filter-group-label">NIVEL:</span>
                 <button className={`option-pill level-all-pill ${filters.activeLevels.size === LOG_LEVELS.length ? 'active' : ''}`}
-                  onClick={() => { setFilters(p => ({ ...p, activeLevels: filters.activeLevels.size === LOG_LEVELS.length ? new Set() : defaultLevels() })); setCurrentPage(1); }}><span>TODOS</span></button>
+                  onClick={() => { setFilters(p => ({ ...p, activeLevels: defaultLevels() })); setCurrentPage(1); }}><span>TODOS</span></button>
                 {LOG_LEVELS.map(level => {
                   const active = filters.activeLevels.has(level);
                   const meta = LEVEL_META[level];
                   return <button key={level} className={`level-pill level-${level.toLowerCase()}-pill ${active ? 'active' : ''}`}
-                    onClick={() => { const n = new Set(filters.activeLevels); n.has(level) ? n.delete(level) : n.add(level); setFilters(p => ({ ...p, activeLevels: n })); setCurrentPage(1); }}>{level}</button>;
+                    onClick={() => handleLevelClick(level)}>{level}</button>;
                 })}
               </div>
               <div className="dropdown-filters">
@@ -249,10 +297,10 @@ export function App() {
                 <div className="date-filter-group">
                   <span className="material-icons-round date-filter-icon">date_range</span>
                   <label className="filter-group-label" htmlFor="date-from">Desde:</label>
-                  <input type="datetime-local" id="date-from" className="date-input" value={filters.dateFrom ? filters.dateFrom.toISOString().slice(0, 16) : ''}
+                  <input type="datetime-local" id="date-from" className="date-input" value={filters.dateFrom ? toLocalISOString(filters.dateFrom) : ''}
                     onChange={e => { setFilters(p => ({ ...p, dateFrom: e.target.value ? new Date(e.target.value) : null })); setCurrentPage(1); }} />
                   <label className="filter-group-label" htmlFor="date-to">Hasta:</label>
-                  <input type="datetime-local" id="date-to" className="date-input" value={filters.dateTo ? filters.dateTo.toISOString().slice(0, 16) : ''}
+                  <input type="datetime-local" id="date-to" className="date-input" value={filters.dateTo ? toLocalISOString(filters.dateTo) : ''}
                     onChange={e => { setFilters(p => ({ ...p, dateTo: e.target.value ? new Date(e.target.value) : null })); setCurrentPage(1); }} />
                   {(filters.dateFrom || filters.dateTo) && <button id="btn-clear-dates" className="secondary-button" onClick={() => { setFilters(p => ({ ...p, dateFrom: null, dateTo: null })); setCurrentPage(1); }}><span className="material-icons-round">close</span></button>}
                 </div>
@@ -293,7 +341,15 @@ export function App() {
                     {(['timestamp', 'level', 'service', 'correlationId', 'message'] as const).map(col => (
                       <th key={col} width={col === 'timestamp' ? '14%' : col === 'level' ? '8%' : col === 'service' ? '18%' : col === 'correlationId' ? '15%' : '42%'}
                         className={`sortable-th ${sortColumn === col ? 'sort-active' : ''}`} data-sort-key={col}
-                        onClick={() => { sortColumn === col ? setSortDirection(d => d === 'asc' ? 'desc' : 'asc') : setSortColumn(col); setSortDirection('asc'); setCurrentPage(1); }}>
+                        onClick={() => {
+                          if (sortColumn === col) {
+                            setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
+                          } else {
+                            setSortColumn(col);
+                            setSortDirection('asc');
+                          }
+                          setCurrentPage(1);
+                        }}>
                         {{ timestamp: 'Marca de Tiempo', level: 'Nivel', service: 'Servicio / Método', correlationId: 'ID Correlación', message: 'Mensaje / Contenido' }[col]}
                         <span className="sort-indicator">{sortColumn === col ? (sortDirection === 'asc' ? ' ▲' : ' ▼') : ''}</span>
                       </th>
@@ -312,7 +368,7 @@ export function App() {
                         <td><span className="badge badge-outline" style={{ color: `hsl(${lc})`, borderColor: `hsla(${lc},0.4)`, background: `hsla(${lc},0.08)` }}>{log.level}</span></td>
                         <td><div className="badge badge-service" title={log.service}>{log.service}</div></td>
                         <td>{log.correlationId !== '-' ? <span className="badge badge-correlation" title={log.correlationId}>{log.correlationId}</span> : <span style={{ color: 'var(--text-muted)' }}>-</span>}</td>
-                        <td><div className="log-message-cell">{escapeHtml(snippet)}</div></td>
+                        <td><div className="log-message-cell">{highlightText(snippet, filters.searchTerm, filters.isRegexSearch)}</div></td>
                       </tr>
                     );
                   })}
