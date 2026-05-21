@@ -9,6 +9,7 @@ export interface FilterState {
   isPayloadsOnly: boolean;
   dateFrom: Date | null;
   dateTo: Date | null;
+  correlationId: string | null;
 }
 
 export type SortColumn = 'timestamp' | 'level' | 'service' | 'correlationId' | 'message' | null;
@@ -26,6 +27,10 @@ export function applyFilters(
 
   if (filters.activeService !== 'ALL') {
     filtered = filtered.filter(log => log.service === filters.activeService);
+  }
+
+  if (filters.correlationId) {
+    filtered = filtered.filter(log => log.correlationId === filters.correlationId);
   }
 
   if (filters.dateFrom || filters.dateTo) {

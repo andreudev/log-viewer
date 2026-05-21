@@ -10,4 +10,5 @@ export interface LogEntry {
   correlationId: string;
   message: string;
   raw: string;
+  deltaTimeMs?: number;
 }

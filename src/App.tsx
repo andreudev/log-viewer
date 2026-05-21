@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { parseLogs, defaultLevels } from './domain/parsing/parseLogs';
 import { applyFilters, FilterState, SortColumn, SortDirection } from './application/usecases/applyFilters';
 import { buildStats, buildDistribution } from './application/usecases/buildStats';
@@ -7,6 +7,7 @@ import { LogEntry, LogLevel } from './domain/models/LogEntry';
 import { formatPayload } from './domain/formatting/formatPayload';
 import { highlightJson } from './domain/formatting/highlightJson';
 import { highlightXml } from './domain/formatting/highlightXml';
+import { parseTimestamp } from './domain/parsing/parseTimestamp';
 
 const PAGE_SIZE = 200;
 const LOG_LEVELS: LogLevel[] = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'REQ', 'RESP'];
@@ -81,13 +82,129 @@ function runDiagnosis(msg: string): string | null {
   return null;
 }
 
+function calculateDeltas(entries: LogEntry[]): LogEntry[] {
+  const parsedDates = new Map<number, number>();
+  entries.forEach(e => {
+    const d = parseTimestamp(e.timestamp);
+    if (d) {
+      parsedDates.set(e.id, d.getTime());
+    }
+  });
+
+  const groups = new Map<string, LogEntry[]>();
+  entries.forEach(entry => {
+    const cid = entry.correlationId;
+    if (cid && cid !== '-') {
+      if (!groups.has(cid)) {
+        groups.set(cid, []);
+      }
+      groups.get(cid)!.push(entry);
+    }
+  });
+
+  groups.forEach((groupEntries) => {
+    groupEntries.sort((a, b) => {
+      const timeA = parsedDates.get(a.id) || 0;
+      const timeB = parsedDates.get(b.id) || 0;
+      return timeA - timeB;
+    });
+
+    for (let i = 1; i < groupEntries.length; i++) {
+      const prev = groupEntries[i - 1];
+      const curr = groupEntries[i];
+      const prevTime = parsedDates.get(prev.id);
+      const currTime = parsedDates.get(curr.id);
+      if (prevTime !== undefined && currTime !== undefined) {
+        curr.deltaTimeMs = currTime - prevTime;
+      }
+    }
+  });
+
+  return entries;
+}
+
+interface DiffLine {
+  type: 'added' | 'removed' | 'unchanged';
+  value: string;
+}
+
+function computeDiff(textA: string, textB: string): { left: DiffLine[]; right: DiffLine[] } {
+  const linesA = textA.split('\n');
+  const linesB = textB.split('\n');
+  
+  const left: DiffLine[] = [];
+  const right: DiffLine[] = [];
+  
+  const maxLines = 500;
+  const truncatedA = linesA.slice(0, maxLines);
+  const truncatedB = linesB.slice(0, maxLines);
+  
+  const dp: number[][] = Array(truncatedA.length + 1).fill(0).map(() => Array(truncatedB.length + 1).fill(0));
+  
+  for (let i = 1; i <= truncatedA.length; i++) {
+    for (let j = 1; j <= truncatedB.length; j++) {
+      if (truncatedA[i - 1].trim() === truncatedB[j - 1].trim()) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+  
+  let i = truncatedA.length;
+  let j = truncatedB.length;
+  
+  const actions: { type: 'match' | 'delete' | 'insert'; lineA?: string; lineB?: string }[] = [];
+  
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && truncatedA[i - 1].trim() === truncatedB[j - 1].trim()) {
+      actions.push({ type: 'match', lineA: truncatedA[i - 1], lineB: truncatedB[j - 1] });
+      i--;
+      j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      actions.push({ type: 'insert', lineB: truncatedB[j - 1] });
+      j--;
+    } else {
+      actions.push({ type: 'delete', lineA: truncatedA[i - 1] });
+      i--;
+    }
+  }
+  
+  actions.reverse();
+  
+  const leftSide: DiffLine[] = [];
+  const rightSide: DiffLine[] = [];
+  
+  actions.forEach(action => {
+    if (action.type === 'match') {
+      leftSide.push({ type: 'unchanged', value: action.lineA || '' });
+      rightSide.push({ type: 'unchanged', value: action.lineB || '' });
+    } else if (action.type === 'delete') {
+      leftSide.push({ type: 'removed', value: action.lineA || '' });
+      rightSide.push({ type: 'unchanged', value: '' });
+    } else if (action.type === 'insert') {
+      leftSide.push({ type: 'unchanged', value: '' });
+      rightSide.push({ type: 'added', value: action.lineB || '' });
+    }
+  });
+  
+  if (linesA.length > maxLines) {
+    leftSide.push({ type: 'unchanged', value: `... [Truncado, ${linesA.length - maxLines} líneas omitidas]` });
+  }
+  if (linesB.length > maxLines) {
+    rightSide.push({ type: 'unchanged', value: `... [Truncado, ${linesB.length - maxLines} líneas omitidas]` });
+  }
+  
+  return { left: leftSide, right: rightSide };
+}
+
 export function App() {
   const [files, setFiles] = useState<LogFileMeta[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [activeFile, setActiveFile] = useState<LogFileMeta | null>(null);
   const [parsedLogs, setParsedLogs] = useState<LogEntry[]>([]);
   const [filters, setFilters] = useState<FilterState>({
-    activeLevels: defaultLevels(), activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null
+    activeLevels: defaultLevels(), activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null, correlationId: null
   });
   const [sortColumn, setSortColumn] = useState<SortColumn>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -96,11 +213,76 @@ export function App() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark-theme');
 
+  const [pinnedIds, setPinnedIds] = useState<Set<number>>(new Set());
+
+  const updatePinnedIdsForFile = (fileName: string, updater: (prev: Set<number>) => Set<number>) => {
+    setPinnedIds(prev => {
+      const next = updater(prev);
+      try {
+        const pinsMapRaw = localStorage.getItem('pinnedLogsMap') || '{}';
+        const pinsMap = JSON.parse(pinsMapRaw);
+        pinsMap[fileName] = Array.from(next);
+        localStorage.setItem('pinnedLogsMap', JSON.stringify(pinsMap));
+      } catch (e) {
+        console.error("Error saving pins to localStorage", e);
+      }
+      return next;
+    });
+  };
+  const [compareQueue, setCompareQueue] = useState<LogEntry[]>([]);
+  const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+  const [exportSuccess, setExportSuccess] = useState(false);
+
+  const leftRef = useRef<HTMLDivElement>(null);
+  const rightRef = useRef<HTMLDivElement>(null);
+
+  const handleLeftScroll = () => {
+    if (leftRef.current && rightRef.current) {
+      rightRef.current.scrollTop = leftRef.current.scrollTop;
+      rightRef.current.scrollLeft = leftRef.current.scrollLeft;
+    }
+  };
+
+  const handleRightScroll = () => {
+    if (leftRef.current && rightRef.current) {
+      leftRef.current.scrollTop = rightRef.current.scrollTop;
+      leftRef.current.scrollLeft = rightRef.current.scrollLeft;
+    }
+  };
+
   useEffect(() => { document.body.className = theme; localStorage.setItem('theme', theme); }, [theme]);
 
   useEffect(() => {
     setLoadingFiles(true);
-    fetchFiles().then(f => { setFiles(f); setLoadingFiles(false); });
+    fetchFiles().then(async (f) => {
+      setFiles(f);
+      setLoadingFiles(false);
+      
+      const lastActiveName = localStorage.getItem('activeFileName');
+      if (lastActiveName) {
+        const found = f.find(file => file.name === lastActiveName);
+        if (found) {
+          try {
+            const content = await fetchFileContent(found.name);
+            const parsed = parseLogs(content);
+            const withDeltas = calculateDeltas(parsed);
+            setParsedLogs(withDeltas);
+            setActiveFile(found);
+            
+            const pinsMapRaw = localStorage.getItem('pinnedLogsMap');
+            if (pinsMapRaw) {
+              const pinsMap = JSON.parse(pinsMapRaw);
+              const filePins = pinsMap[found.name];
+              if (Array.isArray(filePins)) {
+                setPinnedIds(new Set(filePins));
+              }
+            }
+          } catch (e) {
+            console.error("Error loading persisted file content", e);
+          }
+        }
+      }
+    });
   }, []);
 
   const uniqueServices = useMemo(() =>
@@ -117,10 +299,30 @@ export function App() {
 
   const handleFileClick = async (file: LogFileMeta) => {
     setActiveFile(file);
+    localStorage.setItem('activeFileName', file.name);
+    try {
+      const pinsMapRaw = localStorage.getItem('pinnedLogsMap');
+      if (pinsMapRaw) {
+        const pinsMap = JSON.parse(pinsMapRaw);
+        const filePins = pinsMap[file.name];
+        if (Array.isArray(filePins)) {
+          setPinnedIds(new Set(filePins));
+        } else {
+          setPinnedIds(new Set());
+        }
+      } else {
+        setPinnedIds(new Set());
+      }
+    } catch (e) {
+      console.error("Error restoring pins in handleFileClick", e);
+      setPinnedIds(new Set());
+    }
+
     const content = await fetchFileContent(file.name);
     const parsed = parseLogs(content);
-    setParsedLogs(parsed);
-    setFilters(p => ({ ...p, activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null, activeLevels: defaultLevels() }));
+    const withDeltas = calculateDeltas(parsed);
+    setParsedLogs(withDeltas);
+    setFilters(p => ({ ...p, activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null, correlationId: null, activeLevels: defaultLevels() }));
     setSortColumn(null); setSortDirection('asc'); setCurrentPage(1); setActiveLog(null); setIsDrawerOpen(false);
   };
 
@@ -130,9 +332,29 @@ export function App() {
       const content = e.target?.result as string;
       if (!content) return;
       setActiveFile({ name: file.name, sizeBytes: file.size, modifiedAt: new Date().toISOString(), createdAt: new Date().toISOString() });
+      localStorage.setItem('activeFileName', file.name);
+      try {
+        const pinsMapRaw = localStorage.getItem('pinnedLogsMap');
+        if (pinsMapRaw) {
+          const pinsMap = JSON.parse(pinsMapRaw);
+          const filePins = pinsMap[file.name];
+          if (Array.isArray(filePins)) {
+            setPinnedIds(new Set(filePins));
+          } else {
+            setPinnedIds(new Set());
+          }
+        } else {
+          setPinnedIds(new Set());
+        }
+      } catch (e) {
+        console.error("Error restoring pins in handleFileUpload", e);
+        setPinnedIds(new Set());
+      }
+
       const parsed = parseLogs(content);
-      setParsedLogs(parsed);
-      setFilters(p => ({ ...p, activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null, activeLevels: defaultLevels() }));
+      const withDeltas = calculateDeltas(parsed);
+      setParsedLogs(withDeltas);
+      setFilters(p => ({ ...p, activeService: 'ALL', searchTerm: '', isRegexSearch: false, isPayloadsOnly: false, dateFrom: null, dateTo: null, correlationId: null, activeLevels: defaultLevels() }));
       setSortColumn(null); setSortDirection('asc'); setCurrentPage(1); setActiveLog(null); setIsDrawerOpen(false);
     };
     reader.readAsText(file);
@@ -141,6 +363,30 @@ export function App() {
   const copyText = useCallback(async (text: string) => {
     try { await navigator.clipboard.writeText(text); } catch { console.warn('Copy failed'); }
   }, []);
+
+  const handleExportMarkdown = useCallback((log: LogEntry) => {
+    const payloadInfo = formatPayload(log.message);
+    const codeBlock = payloadInfo.formatted ? `\`\`\`${payloadInfo.kind === 'xml' ? 'xml' : 'json'}\n${payloadInfo.formatted}\n\`\`\`` : `\`\`\`text\n${log.message}\n\`\`\``;
+    
+    const report = `### 🚨 Reporte de Incidencia - LogScope
+- **Registro ID:** #${log.id}
+- **Nivel:** ${log.level}
+- **Servicio/Método:** \`${log.service}\`
+- **ID Correlación:** \`${log.correlationId}\`
+- **Clase Origen:** \`${log.className}\`
+- **Marca de Tiempo:** ${log.timestamp}
+- **Hilo:** \`${log.thread}\`
+
+#### 📝 Detalle / Payload:
+${codeBlock}
+
+---
+*Reporte generado automáticamente desde LogScope Analyzer*`;
+
+    copyText(report);
+    setExportSuccess(true);
+    setTimeout(() => setExportSuccess(false), 2000);
+  }, [copyText]);
 
   const handleLevelClick = useCallback((level: LogLevel) => {
     const isAllActive = filters.activeLevels.size === LOG_LEVELS.length;
@@ -211,6 +457,80 @@ export function App() {
             <input type="file" id="file-input" accept=".log,.txt" style={{ display: 'none' }} onChange={e => { if (e.target.files?.length) handleFileUpload(e.target.files[0]); }} />
           </div>
         </div>
+
+        {pinnedIds.size > 0 && (
+          <div className="sidebar-section pinned-section">
+            <div className="section-title">
+              <span>LOGS FIJADOS ({pinnedIds.size})</span>
+              <button 
+                className="icon-button compact-btn" 
+                title="Limpiar todos los pines"
+                onClick={() => {
+                  if (activeFile) {
+                    updatePinnedIdsForFile(activeFile.name, () => new Set());
+                  } else {
+                    setPinnedIds(new Set());
+                  }
+                }}
+              >
+                <span className="material-icons-round" style={{ fontSize: 14 }}>delete_sweep</span>
+              </button>
+            </div>
+            <div className="pinned-list">
+              {Array.from(pinnedIds).map(id => {
+                const log = parsedLogs.find(l => l.id === id);
+                if (!log) return null;
+                const lc = LEVEL_META[log.level]?.color || '200, 10%, 50%';
+                const time = log.timestamp.split(' ')[1] || log.timestamp;
+                const shortMsg = log.message.trim().slice(0, 45) + (log.message.length > 45 ? '...' : '');
+                return (
+                  <div 
+                    key={id} 
+                    className={`pinned-item level-${log.level.toLowerCase()}`}
+                    onClick={() => {
+                      setActiveLog(log);
+                      setIsDrawerOpen(true);
+                      setTimeout(() => {
+                        const row = document.getElementById(`log-row-${log.id}`);
+                        if (row) {
+                          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
+                      }, 100);
+                    }}
+                  >
+                    <div className="pinned-item-header">
+                      <span className="pinned-badge" style={{ color: `hsl(${lc})`, background: `hsla(${lc},0.1)` }}>{log.level}</span>
+                      <span className="pinned-time">{time}</span>
+                      <button 
+                        className="pinned-remove-btn" 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (activeFile) {
+                            updatePinnedIdsForFile(activeFile.name, prev => {
+                              const next = new Set(prev);
+                              next.delete(id);
+                              return next;
+                            });
+                          } else {
+                            setPinnedIds(prev => {
+                              const next = new Set(prev);
+                              next.delete(id);
+                              return next;
+                            });
+                          }
+                        }}
+                      >
+                        <span className="material-icons-round">close</span>
+                      </button>
+                    </div>
+                    <div className="pinned-msg" title={log.message}>{shortMsg}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="sidebar-footer">
           <div className="theme-toggle-container">
             <button className="theme-toggle-btn" onClick={() => setTheme(t => t === 'dark-theme' ? 'light-theme' : 'dark-theme')}>
@@ -262,6 +582,15 @@ export function App() {
 
         {parsedLogs.length > 0 && (
           <section className="filter-panel">
+            {filters.correlationId && (
+              <div className="flow-isolation-banner">
+                <span className="material-icons-round text-accent">insights</span>
+                <span>Aislamiento de Flujo Activo: <code>{filters.correlationId}</code></span>
+                <button className="secondary-button compact-btn" onClick={() => setFilters(p => ({ ...p, correlationId: null }))}>
+                  <span className="material-icons-round" style={{ fontSize: 14 }}>close</span> Restablecer Vista
+                </button>
+              </div>
+            )}
             <div className="filter-row search-row">
               <div className="search-input-wrapper">
                 <span className="material-icons-round search-icon">search</span>
@@ -337,9 +666,9 @@ export function App() {
               <table className="logs-table">
                 <thead>
                   <tr>
-                    <th width="3%"></th>
+                    <th width="4%" className="pin-header">Pin</th>
                     {(['timestamp', 'level', 'service', 'correlationId', 'message'] as const).map(col => (
-                      <th key={col} width={col === 'timestamp' ? '14%' : col === 'level' ? '8%' : col === 'service' ? '18%' : col === 'correlationId' ? '15%' : '42%'}
+                      <th key={col} width={col === 'timestamp' ? '14%' : col === 'level' ? '8%' : col === 'service' ? '18%' : col === 'correlationId' ? '15%' : '41%'}
                         className={`sortable-th ${sortColumn === col ? 'sort-active' : ''}`} data-sort-key={col}
                         onClick={() => {
                           if (sortColumn === col) {
@@ -361,13 +690,59 @@ export function App() {
                     const lc = LEVEL_META[log.level]?.color || '200, 10%, 50%';
                     const dateFormatted = log.timestamp.split(',')[0];
                     const snippet = log.message.trim().replace(/\s+/g, ' ').slice(0, 120) + (log.message.length > 120 ? '...' : '');
+                    const isPinned = pinnedIds.has(log.id);
                     return (
-                      <tr key={log.id} id={`log-row-${log.id}`} className={activeLog?.id === log.id ? 'active-row' : ''} onClick={() => { setActiveLog(log); setIsDrawerOpen(true); }}>
-                        <td><span className="material-icons-round chevron-icon">chevron_right</span></td>
-                        <td><span className="log-timestamp">{dateFormatted}</span></td>
+                      <tr key={log.id} id={`log-row-${log.id}`} className={`${activeLog?.id === log.id ? 'active-row' : ''} ${isPinned ? 'pinned-row' : ''}`} onClick={() => { setActiveLog(log); setIsDrawerOpen(true); }}>
+                        <td onClick={(e) => {
+                          e.stopPropagation();
+                          if (activeFile) {
+                            updatePinnedIdsForFile(activeFile.name, prev => {
+                              const next = new Set(prev);
+                              if (next.has(log.id)) {
+                                next.delete(log.id);
+                              } else {
+                                next.add(log.id);
+                              }
+                              return next;
+                            });
+                          }
+                        }}>
+                          <span className={`material-icons-round pin-icon ${isPinned ? 'active' : ''}`} title={isPinned ? "Quitar marcador" : "Fijar log (Marcador)"}>
+                            {isPinned ? 'push_pin' : 'push_pin'}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="timestamp-cell">
+                            <span className="log-timestamp">{dateFormatted}</span>
+                            {log.deltaTimeMs !== undefined && (
+                              <span className={`latency-badge ${log.deltaTimeMs > 5000 ? 'latency-danger' : log.deltaTimeMs > 1000 ? 'latency-warning' : 'latency-normal'}`} title={`Tiempo desde el log anterior del mismo flujo: ${log.deltaTimeMs}ms`}>
+                                +{log.deltaTimeMs >= 1000 ? `${(log.deltaTimeMs / 1000).toFixed(2)}s` : `${log.deltaTimeMs}ms`}
+                              </span>
+                            )}
+                          </div>
+                        </td>
                         <td><span className="badge badge-outline" style={{ color: `hsl(${lc})`, borderColor: `hsla(${lc},0.4)`, background: `hsla(${lc},0.08)` }}>{log.level}</span></td>
                         <td><div className="badge badge-service" title={log.service}>{log.service}</div></td>
-                        <td>{log.correlationId !== '-' ? <span className="badge badge-correlation" title={log.correlationId}>{log.correlationId}</span> : <span style={{ color: 'var(--text-muted)' }}>-</span>}</td>
+                        <td>
+                          {log.correlationId !== '-' ? (
+                            <div className="correlation-cell">
+                              <span className="badge badge-correlation" title={log.correlationId}>{log.correlationId}</span>
+                              <button 
+                                className="icon-button trace-flow-btn" 
+                                title="Aislar flujo de esta petición"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setFilters(p => ({ ...p, correlationId: log.correlationId }));
+                                  setCurrentPage(1);
+                                }}
+                              >
+                                <span className="material-icons-round" style={{ fontSize: 13 }}>filter_alt</span>
+                              </button>
+                            </div>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)' }}>-</span>
+                          )}
+                        </td>
                         <td><div className="log-message-cell">{highlightText(snippet, filters.searchTerm, filters.isRegexSearch)}</div></td>
                       </tr>
                     );
@@ -400,7 +775,28 @@ export function App() {
                 <span className="material-icons-round drawer-icon">segment</span>
                 <h2>Detalle del Registro</h2>
               </div>
-              <button id="btn-close-drawer" className="icon-button" onClick={() => setIsDrawerOpen(false)}><span className="material-icons-round">close</span></button>
+              <div className="drawer-header-actions">
+                <button 
+                  className={`icon-button pin-drawer-btn ${pinnedIds.has(activeLog.id) ? 'active' : ''}`} 
+                  title={pinnedIds.has(activeLog.id) ? "Quitar marcador" : "Fijar log (Marcador)"}
+                  onClick={() => {
+                    if (activeFile) {
+                      updatePinnedIdsForFile(activeFile.name, prev => {
+                        const next = new Set(prev);
+                        if (next.has(activeLog.id)) {
+                          next.delete(activeLog.id);
+                        } else {
+                          next.add(activeLog.id);
+                        }
+                        return next;
+                      });
+                    }
+                  }}
+                >
+                  <span className="material-icons-round">push_pin</span>
+                </button>
+                <button id="btn-close-drawer" className="icon-button" onClick={() => setIsDrawerOpen(false)}><span className="material-icons-round">close</span></button>
+              </div>
             </div>
             <div className="drawer-body">
               <div className="drawer-meta-grid">
@@ -418,15 +814,37 @@ export function App() {
                   <span className="meta-label">Marca de Tiempo</span>
                   <span className="meta-value">{activeLog.timestamp}</span>
                 </div>
+                {activeLog.deltaTimeMs !== undefined && (
+                  <div className="meta-field" style={{ gridColumn: 'span 2' }}>
+                    <span className="meta-label">Latencia (Delta)</span>
+                    <span className={`meta-value latency-value ${activeLog.deltaTimeMs > 5000 ? 'latency-danger' : activeLog.deltaTimeMs > 1000 ? 'latency-warning' : 'latency-normal'}`}>
+                      +{activeLog.deltaTimeMs >= 1000 ? `${(activeLog.deltaTimeMs / 1000).toFixed(2)}s` : `${activeLog.deltaTimeMs}ms`} (desde log previo del mismo flujo)
+                    </span>
+                  </div>
+                )}
                 <div className="meta-field" style={{ gridColumn: 'span 2' }}>
                   <span className="meta-label">Servicio o Método</span>
                   <span className="meta-value meta-value-accent">{activeLog.service}</span>
                 </div>
-                <div className="meta-field">
+                <div className="meta-field" style={{ gridColumn: 'span 2' }}>
                   <span className="meta-label">ID de Correlación</span>
-                  <span className="meta-value meta-value-mono">{activeLog.correlationId}</span>
+                  <div className="correlation-drawer-value">
+                    <span className="meta-value meta-value-mono">{activeLog.correlationId}</span>
+                    {activeLog.correlationId !== '-' && (
+                      <button 
+                        className="secondary-button compact-btn"
+                        title="Aislar este flujo de peticiones"
+                        onClick={() => {
+                          setFilters(p => ({ ...p, correlationId: activeLog.correlationId }));
+                          setCurrentPage(1);
+                        }}
+                      >
+                        <span className="material-icons-round" style={{ fontSize: 13 }}>filter_alt</span> Aislar Flujo
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="meta-field">
+                <div className="meta-field" style={{ gridColumn: 'span 2' }}>
                   <span className="meta-label">Clase / Origen</span>
                   <span className="meta-value" title={activeLog.className}>{activeLog.className}</span>
                 </div>
@@ -435,6 +853,38 @@ export function App() {
                   <span className="meta-value meta-value-mono">{activeLog.thread}</span>
                 </div>
               </div>
+
+              {(() => {
+                const isInCompareQueue = compareQueue.some(c => c.id === activeLog.id);
+                return (
+                  <div className="drawer-actions-row">
+                    <button 
+                      className={`secondary-button compare-action-btn ${isInCompareQueue ? 'active' : ''}`}
+                      disabled={!isInCompareQueue && compareQueue.length >= 2}
+                      onClick={() => {
+                        setCompareQueue(prev => {
+                          const exists = prev.some(c => c.id === activeLog.id);
+                          if (exists) {
+                            return prev.filter(c => c.id !== activeLog.id);
+                          } else {
+                            if (prev.length >= 2) return prev;
+                            return [...prev, activeLog];
+                          }
+                        });
+                      }}
+                    >
+                      <span className="material-icons-round">
+                        {isInCompareQueue ? 'remove_done' : 'compare_arrows'}
+                      </span>
+                      <span>{isInCompareQueue ? 'Quitar de Comparar' : 'Agregar a Comparar'}</span>
+                    </button>
+                    <button className="primary-button export-md-btn" onClick={() => handleExportMarkdown(activeLog)}>
+                      <span className="material-icons-round">{exportSuccess ? 'done' : 'bug_report'}</span>
+                      <span>{exportSuccess ? '¡Copiado a Reporte!' : 'Exportar para Reporte (Markdown)'}</span>
+                    </button>
+                  </div>
+                );
+              })()}
 
               {activeDiagnosis && (
                 <div className="diagnosis-box">
@@ -474,6 +924,113 @@ export function App() {
             </div>
           </aside>
         </>
+      )}
+
+      {compareQueue.length > 0 && (
+        <div className="floating-compare-bar">
+          <div className="compare-bar-content">
+            <span className="material-icons-round compare-bar-icon">compare_arrows</span>
+            <span className="compare-bar-text">
+              Comparar Logs: <b>{compareQueue.length}/2</b> seleccionados
+            </span>
+            <div className="compare-bar-items">
+              {compareQueue.map(item => (
+                <span key={item.id} className="compare-pill">
+                  #{item.id} <span className="pinned-badge" style={{ color: `hsl(${LEVEL_META[item.level]?.color || '0,0%,50%'})`, background: `hsla(${LEVEL_META[item.level]?.color || '0,0%,50%'},0.1)` }}>{item.level}</span>
+                  <button className="remove-pill-btn" onClick={() => setCompareQueue(prev => prev.filter(c => c.id !== item.id))}>
+                    <span className="material-icons-round">close</span>
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="compare-bar-actions">
+              <button 
+                className="primary-button compact-btn compare-run-btn" 
+                disabled={compareQueue.length < 2}
+                onClick={() => setIsCompareModalOpen(true)}
+                title={compareQueue.length < 2 ? "Selecciona 2 logs para comparar" : "Ver comparación lado a lado"}
+              >
+                <span className="material-icons-round">difference</span> Comparar
+              </button>
+              <button className="secondary-button compact-btn" onClick={() => setCompareQueue([])}>
+                Limpiar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isCompareModalOpen && compareQueue.length === 2 && (
+        <div className="compare-modal-overlay">
+          <div className="compare-modal">
+            <div className="compare-modal-header">
+              <div className="compare-modal-title">
+                <span className="material-icons-round">difference</span>
+                <h2>Comparador de Payloads Lado a Lado</h2>
+              </div>
+              <button className="icon-button" onClick={() => setIsCompareModalOpen(false)}>
+                <span className="material-icons-round">close</span>
+              </button>
+            </div>
+            <div className="compare-modal-meta">
+              <div className="compare-meta-left">
+                <span className="meta-label">Log Izquierda (Log A)</span>
+                <div className="compare-meta-val">
+                  <span className="badge" style={{ color: `hsl(${LEVEL_META[compareQueue[0].level]?.color || '0,0%,50%'})`, background: `hsla(${LEVEL_META[compareQueue[0].level]?.color || '0,0%,50%'},0.1)` }}>{compareQueue[0].level}</span>
+                  <span>ID: <b>#{compareQueue[0].id}</b></span>
+                  <span>• <b>{compareQueue[0].service}</b></span>
+                </div>
+              </div>
+              <div className="compare-modal-meta-center">
+                <span className="material-icons-round">swap_horiz</span>
+              </div>
+              <div className="compare-meta-right">
+                <span className="meta-label">Log Derecha (Log B)</span>
+                <div className="compare-meta-val">
+                  <span className="badge" style={{ color: `hsl(${LEVEL_META[compareQueue[1].level]?.color || '0,0%,50%'})`, background: `hsla(${LEVEL_META[compareQueue[1].level]?.color || '0,0%,50%'},0.1)` }}>{compareQueue[1].level}</span>
+                  <span>ID: <b>#{compareQueue[1].id}</b></span>
+                  <span>• <b>{compareQueue[1].service}</b></span>
+                </div>
+              </div>
+            </div>
+            <div className="compare-modal-body">
+              {(() => {
+                const payloadA = formatPayload(compareQueue[0].message);
+                const payloadB = formatPayload(compareQueue[1].message);
+                const textA = payloadA.formatted || compareQueue[0].message;
+                const textB = payloadB.formatted || compareQueue[1].message;
+                const { left, right } = computeDiff(textA, textB);
+                
+                return (
+                  <div className="diff-container">
+                    <div className="diff-column diff-column-left" ref={leftRef} onScroll={handleLeftScroll}>
+                      <pre className="diff-pre">
+                        {left.map((line, idx) => (
+                          <div key={idx} className={`diff-line-wrapper diff-${line.type}`}>
+                            <span className="diff-line-number">{line.value !== '' ? idx + 1 : ''}</span>
+                            <span className="diff-line-sign">{line.type === 'removed' ? '-' : ' '}</span>
+                            <span className="diff-line-content">{line.value}</span>
+                          </div>
+                        ))}
+                      </pre>
+                    </div>
+                    <div className="diff-column diff-column-right" ref={rightRef} onScroll={handleRightScroll}>
+                      <pre className="diff-pre">
+                        {right.map((line, idx) => (
+                          <div key={idx} className={`diff-line-wrapper diff-${line.type}`}>
+                            <span className="diff-line-number">{line.value !== '' ? idx + 1 : ''}</span>
+                            <span className="diff-line-sign">{line.type === 'added' ? '+' : ' '}</span>
+                            <span className="diff-line-content">{line.value}</span>
+                          </div>
+                        ))}
+                      </pre>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
