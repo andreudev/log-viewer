@@ -1,4 +1,4 @@
-export type LogLevel = 'TRACE' | 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'REQ' | 'RESP';
+export type LogLevel = string;
 
 export interface LogEntry {
   id: number;

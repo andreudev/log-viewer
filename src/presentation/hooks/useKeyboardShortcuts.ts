@@ -11,6 +11,7 @@ interface KeyboardShortcutsProps {
   onCloseAll: () => void;
   isDrawerOpen: boolean;
   isCompareModalOpen: boolean;
+  isShortcutsModalOpen: boolean;
 }
 
 export function useKeyboardShortcuts({
@@ -23,7 +24,8 @@ export function useKeyboardShortcuts({
   onSearchFocus,
   onCloseAll,
   isDrawerOpen,
-  isCompareModalOpen
+  isCompareModalOpen,
+  isShortcutsModalOpen
 }: KeyboardShortcutsProps) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -97,7 +99,7 @@ export function useKeyboardShortcuts({
           break;
 
         case 'Escape':
-          if (isDrawerOpen || isCompareModalOpen) {
+          if (isDrawerOpen || isCompareModalOpen || isShortcutsModalOpen) {
             e.preventDefault();
             onCloseAll();
           }
@@ -112,5 +114,5 @@ export function useKeyboardShortcuts({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [focusedIndex, maxIndex, onSelectRow, onPinRow, onCompareRow, onSearchFocus, onCloseAll, isDrawerOpen, isCompareModalOpen, setFocusedIndex]);
+  }, [focusedIndex, maxIndex, onSelectRow, onPinRow, onCompareRow, onSearchFocus, onCloseAll, isDrawerOpen, isCompareModalOpen, isShortcutsModalOpen, setFocusedIndex]);
 }

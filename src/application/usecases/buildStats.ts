@@ -22,14 +22,26 @@ export function buildStats(logs: LogEntry[]): DashboardStats {
 }
 
 export function buildDistribution(logs: LogEntry[]): LevelDistribution[] {
-  const levels: LogLevel[] = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'REQ', 'RESP'];
+  const baseLevels = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'REQ', 'RESP'];
+  const uniqueLevels = Array.from(new Set(logs.map(log => log.level).filter(Boolean)));
+  const allLevels = Array.from(new Set([...baseLevels, ...uniqueLevels]));
+  
   const counts = new Map<LogLevel, number>();
-  levels.forEach(level => counts.set(level, 0));
+  allLevels.forEach(level => counts.set(level, 0));
   logs.forEach(log => {
-    if (counts.has(log.level)) {
+    if (log.level) {
       counts.set(log.level, (counts.get(log.level) || 0) + 1);
     }
   });
 
-  return levels.map(level => ({ level, count: counts.get(level) || 0 })).filter(item => item.count > 0);
+  const sortedLevels = allLevels.sort((a, b) => {
+    const idxA = baseLevels.indexOf(a);
+    const idxB = baseLevels.indexOf(b);
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return a.localeCompare(b);
+  });
+
+  return sortedLevels.map(level => ({ level, count: counts.get(level) || 0 })).filter(item => item.count > 0);
 }

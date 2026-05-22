@@ -10,6 +10,7 @@ export interface FilterState {
   dateFrom: Date | null;
   dateTo: Date | null;
   correlationId: string | null;
+  quickFilter?: 'NONE' | 'LATENCY' | 'INTEGRATION_ERRORS' | 'SOAP_TRAFFIC' | 'REQUESTS' | 'RESPONSES';
 }
 
 export type SortColumn = 'timestamp' | 'level' | 'service' | 'correlationId' | 'message' | null;
@@ -23,7 +24,8 @@ export function applyFilters(
 ): LogEntry[] {
   let filtered = logs;
 
-  filtered = filtered.filter(log => filters.activeLevels.has(log.level));
+  const activeLevels = filters.activeLevels instanceof Set ? filters.activeLevels : new Set(filters.activeLevels || []);
+  filtered = filtered.filter(log => activeLevels.has(log.level));
 
   if (filters.activeService !== 'ALL') {
     filtered = filtered.filter(log => log.service === filters.activeService);
@@ -33,19 +35,60 @@ export function applyFilters(
     filtered = filtered.filter(log => log.correlationId === filters.correlationId);
   }
 
-  if (filters.dateFrom || filters.dateTo) {
+  const safeDateFrom = filters.dateFrom ? (filters.dateFrom instanceof Date ? filters.dateFrom : new Date(filters.dateFrom)) : null;
+  const safeDateTo = filters.dateTo ? (filters.dateTo instanceof Date ? filters.dateTo : new Date(filters.dateTo)) : null;
+  const validDateFrom = safeDateFrom && !isNaN(safeDateFrom.getTime()) ? safeDateFrom : null;
+  const validDateTo = safeDateTo && !isNaN(safeDateTo.getTime()) ? safeDateTo : null;
+
+  if (validDateFrom || validDateTo) {
     filtered = filtered.filter(log => {
       const logDate = parseTimestamp(log.timestamp);
       if (!logDate) return true;
-      if (filters.dateFrom && logDate < filters.dateFrom) return false;
-      if (filters.dateTo && logDate > filters.dateTo) return false;
+      if (validDateFrom && logDate < validDateFrom) return false;
+      if (validDateTo && logDate > validDateTo) return false;
       return true;
+    });
+  }
+
+  // Handle Quick Filters
+  if (filters.quickFilter && filters.quickFilter !== 'NONE') {
+    filtered = filtered.filter(log => {
+      const msg = log.message || '';
+      const msgLower = msg.toLowerCase();
+      switch (filters.quickFilter) {
+        case 'LATENCY':
+          return log.deltaTimeMs !== undefined && log.deltaTimeMs > 2000;
+        case 'INTEGRATION_ERRORS':
+          return (
+            log.level === 'ERROR' ||
+            msgLower.includes('timeout') ||
+            msgLower.includes('connection refused') ||
+            msgLower.includes('sockettimeoutexception') ||
+            msgLower.includes('exception') ||
+            msgLower.includes('http 5') ||
+            msgLower.includes('500 internal') ||
+            msgLower.includes('error')
+          );
+        case 'SOAP_TRAFFIC':
+          return (
+            msg.includes('<soapenv:Envelope') ||
+            msg.includes('<soap:') ||
+            msg.includes('<?xml') ||
+            msg.includes('<xml')
+          );
+        case 'REQUESTS':
+          return log.level === 'REQ' || msgLower.includes('request') || msgLower.includes('petición') || msgLower.includes('peticion');
+        case 'RESPONSES':
+          return log.level === 'RESP' || msgLower.includes('response') || msgLower.includes('respuesta');
+        default:
+          return true;
+      }
     });
   }
 
   if (filters.isPayloadsOnly) {
     filtered = filtered.filter(log => {
-      const msg = log.message;
+      const msg = log.message || '';
       return (msg.includes('{') && msg.includes('}')) || (msg.includes('<') && msg.includes('>'));
     });
   }
@@ -55,10 +98,10 @@ export function applyFilters(
       try {
         const regex = new RegExp(filters.searchTerm, 'i');
         filtered = filtered.filter(log =>
-          regex.test(log.message) ||
-          regex.test(log.service) ||
-          regex.test(log.correlationId) ||
-          regex.test(log.className)
+          regex.test(log.message || '') ||
+          regex.test(log.service || '') ||
+          regex.test(log.correlationId || '') ||
+          regex.test(log.className || '')
         );
       } catch {
         return filtered;
@@ -66,10 +109,10 @@ export function applyFilters(
     } else {
       const query = filters.searchTerm.toLowerCase();
       filtered = filtered.filter(log =>
-        log.message.toLowerCase().includes(query) ||
-        log.service.toLowerCase().includes(query) ||
-        log.correlationId.toLowerCase().includes(query) ||
-        log.className.toLowerCase().includes(query)
+        (log.message || '').toLowerCase().includes(query) ||
+        (log.service || '').toLowerCase().includes(query) ||
+        (log.correlationId || '').toLowerCase().includes(query) ||
+        (log.className || '').toLowerCase().includes(query)
       );
     }
   }
