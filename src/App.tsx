@@ -12,6 +12,8 @@ import { AnalyticsDashboard } from './presentation/components/AnalyticsDashboard
 import { getLevelColor } from './presentation/utils/constants';
 import { LogLevel } from './domain/models/LogEntry';
 import { ParserModal } from './presentation/components/ParserModal';
+import { ErrorBoundary } from './presentation/components/ErrorBoundary';
+import { ProcessingOverlay } from './presentation/components/ProcessingOverlay';
 
 export function App() {
   const state = useLogViewerState();
@@ -95,6 +97,8 @@ export function App() {
         togglePin={state.togglePin}
         exportSession={state.exportSession}
         importSession={state.importSession}
+        desktopAlertsEnabled={state.desktopAlertsEnabled}
+        toggleDesktopAlerts={state.toggleDesktopAlerts}
       />
 
       <main className="main-content">
@@ -172,22 +176,39 @@ export function App() {
 
         {/* Filters and Tab Navigation bar */}
         {state.parsedLogs.length > 0 && state.activeTab === 'feed' && (
-          <FiltersPanel 
-            filters={state.filters}
-            setFilters={state.setFilters}
-            setCurrentPage={state.setCurrentPage}
-            uniqueServices={state.uniqueServices}
-            handleLevelClick={state.handleLevelClick}
-            setSortColumn={state.setSortColumn}
-            setSortDirection={state.setSortDirection}
-            logDateRange={state.logDateRange}
-            applyTimePreset={state.applyTimePreset}
-            applyFullDateRange={state.applyFullDateRange}
-            filteredLogs={state.filteredLogs}
-            setActiveLog={state.setActiveLog}
-            setIsDrawerOpen={state.setIsDrawerOpen}
-            availableLevels={state.availableLevels}
-          />
+          <ErrorBoundary fallbackTitle="Error en el panel de filtros">
+            <FiltersPanel 
+              filters={state.filters}
+              setFilters={state.setFilters}
+              setCurrentPage={state.setCurrentPage}
+              uniqueServices={state.uniqueServices}
+              handleLevelClick={state.handleLevelClick}
+              setSortColumn={state.setSortColumn}
+              setSortDirection={state.setSortDirection}
+              logDateRange={state.logDateRange}
+              applyTimePreset={state.applyTimePreset}
+              applyFullDateRange={state.applyFullDateRange}
+              filteredLogs={state.filteredLogs}
+              parsedLogs={state.parsedLogs}
+              setActiveLog={state.setActiveLog}
+              setIsDrawerOpen={state.setIsDrawerOpen}
+              availableLevels={state.availableLevels}
+              
+              isTailing={state.isTailing}
+              setIsTailing={state.setIsTailing}
+              isTailPaused={state.isTailPaused}
+              setIsTailPaused={state.setIsTailPaused}
+              autoScrollTail={state.autoScrollTail}
+              setAutoScrollTail={state.setAutoScrollTail}
+              selectedFiles={state.selectedFiles}
+
+              presets={state.presets}
+              activePresetId={state.activePresetId}
+              saveCurrentAsPreset={state.saveCurrentAsPreset}
+              applyPreset={state.applyPreset}
+              deletePreset={state.deletePreset}
+            />
+          </ErrorBoundary>
         )}
 
         <section className="logs-feed-section">
@@ -239,8 +260,8 @@ export function App() {
               Atajos
             </button>
           </div>
-
           {state.activeTab === 'feed' ? (
+            <ErrorBoundary fallbackTitle="Error en el feed de logs">
             <LogsTable 
               filteredLogs={state.filteredLogs}
               pageLogs={state.pageLogs}
@@ -266,9 +287,17 @@ export function App() {
               setFilters={state.setFilters}
               wrapLines={state.wrapLines}
               setWrapLines={state.setWrapLines}
+              viewMode={state.viewMode}
+              setViewMode={state.setViewMode}
+              saveAnnotation={state.saveAnnotation}
+              isTailing={state.isTailing}
+              autoScrollTail={state.autoScrollTail}
+              downloadFilteredLogs={state.downloadFilteredLogs}
             />
+            </ErrorBoundary>
           ) : (
             <div className="feed-viewport" style={{ padding: '20px' }}>
+              <ErrorBoundary fallbackTitle="Error en las analíticas">
               <AnalyticsDashboard 
                 logs={state.filteredLogs}
                 onSelectCorrelationId={(cid) => {
@@ -282,28 +311,31 @@ export function App() {
                   state.setCurrentPage(1);
                 }}
               />
+              </ErrorBoundary>
             </div>
           )}
         </section>
       </main>
 
-      <DetailsDrawer 
-        isDrawerOpen={state.isDrawerOpen}
-        setIsDrawerOpen={state.setIsDrawerOpen}
-        activeLog={state.activeLog}
-        pinnedKeys={state.pinnedKeys}
-        togglePin={state.togglePin}
-        compareQueue={state.compareQueue}
-        setCompareQueue={state.setCompareQueue}
-        exportSuccess={state.exportSuccess}
-        setExportSuccess={state.setExportSuccess}
-        activeDiagnosis={state.activeDiagnosis}
-        copyText={state.copyText}
-        searchTerm={state.filters.searchTerm}
-        isRegexSearch={state.filters.isRegexSearch}
-        setFilters={state.setFilters}
-        setCurrentPage={state.setCurrentPage}
-      />
+      <ErrorBoundary fallbackTitle="Error en el panel de detalles">
+        <DetailsDrawer 
+          isDrawerOpen={state.isDrawerOpen}
+          setIsDrawerOpen={state.setIsDrawerOpen}
+          activeLog={state.activeLog}
+          pinnedKeys={state.pinnedKeys}
+          togglePin={state.togglePin}
+          compareQueue={state.compareQueue}
+          setCompareQueue={state.setCompareQueue}
+          exportSuccess={state.exportSuccess}
+          setExportSuccess={state.setExportSuccess}
+          activeDiagnosis={state.activeDiagnosis}
+          copyText={state.copyText}
+          searchTerm={state.filters.searchTerm}
+          isRegexSearch={state.filters.isRegexSearch}
+          setFilters={state.setFilters}
+          setCurrentPage={state.setCurrentPage}
+        />
+      </ErrorBoundary>
 
       <CompareModal 
         compareQueue={state.compareQueue}
@@ -332,6 +364,12 @@ export function App() {
       <ShortcutsModal 
         isOpen={state.isShortcutsModalOpen}
         onClose={() => state.setIsShortcutsModalOpen(false)}
+      />
+
+      <ProcessingOverlay 
+        isProcessing={state.isProcessing} 
+        progress={state.progress} 
+        statusText={state.statusText} 
       />
     </div>
   );

@@ -13,4 +13,6 @@ export interface LogEntry {
   deltaTimeMs?: number;
   originFile?: string;
   customBadge?: string;
+  annotation?: string;
 }
+

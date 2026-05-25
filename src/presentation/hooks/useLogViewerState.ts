@@ -1,14 +1,18 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
-import { parseLogs, defaultLevels } from '../../domain/parsing/parseLogs';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { defaultLevels, parseLogs } from '../../domain/parsing/parseLogs';
 import { applyFilters, FilterState, SortColumn, SortDirection } from '../../application/usecases/applyFilters';
 import { buildStats, buildDistribution } from '../../application/usecases/buildStats';
 import { fetchFileContent, fetchFiles, LogFileMeta } from '../../infrastructure/api/filesApi';
 import { LogEntry, LogLevel } from '../../domain/models/LogEntry';
 import { PromotionRule, DEFAULT_RULES } from '../../domain/models/PromotionRule';
-import { calculateDeltas } from '../../domain/parsing/calculateDeltas';
 import { runDiagnosis } from '../../domain/parsing/runDiagnosis';
 import { parseTimestamp } from '../../domain/parsing/parseTimestamp';
 import { ParserConfig, DEFAULT_PARSERS } from '../../domain/models/ParserConfig';
+import { useParseWorker } from './useParseWorker';
+import { connectTail, disconnectTail } from '../../infrastructure/api/tailSocket';
+import { connectFilesWatcher, disconnectFilesWatcher } from '../../infrastructure/api/filesSocket';
+import { FilterPreset } from '../../domain/models/FilterPreset';
+
 
 const PAGE_SIZE = 200;
 
@@ -36,6 +40,72 @@ export function useLogViewerState() {
   const [wrapLines, setWrapLines] = useState<boolean>(() => {
     return localStorage.getItem('wrapLines') !== 'false';
   });
+
+  const [viewMode, setViewMode] = useState<'virtual' | 'paginated'>(() => {
+    return (localStorage.getItem('viewMode') as 'virtual' | 'paginated') || 'virtual';
+  });
+
+  // --- FASE 3: QA PREMIUM STATES ---
+  // 1. Live Log Tailing states
+  const [isTailing, setIsTailing] = useState(false);
+  const [isTailPaused, setIsTailPaused] = useState(false);
+  const [autoScrollTail, setAutoScrollTail] = useState(true);
+
+  // 2. Presets of Filters states
+  const [presets, setPresets] = useState<FilterPreset[]>(() => {
+    try {
+      const saved = localStorage.getItem('filterPresets');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error loading filterPresets', e);
+    }
+    return [];
+  });
+  const [activePresetId, setActivePresetId] = useState<string | null>(null);
+
+  // 3. Annotations states
+  const [annotations, setAnnotations] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem('logAnnotations');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error loading logAnnotations', e);
+    }
+    return {};
+  });
+
+
+  const { isProcessing, progress, statusText, parseWithWorker } = useParseWorker();
+
+  // --- FASE 4: PREMIUM DESKTOP ALERTS ---
+  const [desktopAlertsEnabled, setDesktopAlertsEnabled] = useState<boolean>(() => {
+    return localStorage.getItem('desktopAlertsEnabled') === 'true';
+  });
+
+  const toggleDesktopAlerts = useCallback(() => {
+    if (!desktopAlertsEnabled) {
+      if ('Notification' in window) {
+        Notification.requestPermission().then(permission => {
+          if (permission === 'granted') {
+            setDesktopAlertsEnabled(true);
+            localStorage.setItem('desktopAlertsEnabled', 'true');
+          } else {
+            alert("El permiso de notificaciones de escritorio fue rechazado.");
+          }
+        });
+      } else {
+        alert("Las notificaciones de escritorio no están soportadas en este navegador.");
+      }
+    } else {
+      setDesktopAlertsEnabled(false);
+      localStorage.setItem('desktopAlertsEnabled', 'false');
+    }
+  }, [desktopAlertsEnabled]);
+
+  // Sync viewMode
+  useEffect(() => {
+    localStorage.setItem('viewMode', viewMode);
+  }, [viewMode]);
 
   // Upgrades premium states
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
@@ -123,7 +193,97 @@ export function useLogViewerState() {
     localStorage.setItem('promotionRules', JSON.stringify(rules));
   }, [rules]);
 
-  // Load and merge logic
+  // Live WebSocket Tailing Synchronizer
+  const activeTailFilename = selectedFiles[0] || null;
+
+  useEffect(() => {
+    if (isTailing && activeTailFilename && !isTailPaused) {
+      connectTail(
+        activeTailFilename,
+        (line) => {
+          const parsed = parseLogs(line, parsers);
+          if (parsed.length > 0) {
+            parsed.forEach(entry => {
+              entry.originFile = activeTailFilename;
+              entry.originalId = entry.id;
+              
+              // Apply severity promotion rules
+              for (const rule of rules) {
+                if (rule.enabled && (entry.message || '').includes(rule.pattern)) {
+                  entry.level = rule.targetLevel;
+                  entry.customBadge = rule.customBadge;
+                  break;
+                }
+              }
+
+              // Inject annotation if already exists
+              const noteKey = `${entry.originFile}::${entry.originalId}`;
+              if (annotations[noteKey]) {
+                entry.annotation = annotations[noteKey];
+              }
+
+              // Trigger desktop notification if backgrounded and is critical severity or customBadge
+              if (
+                desktopAlertsEnabled &&
+                document.visibilityState === 'hidden' &&
+                (entry.level === 'ERROR' || entry.level === 'WARN' || entry.customBadge)
+              ) {
+                const title = `🚨 [${entry.level}] ${entry.service || 'Alerta LogScope'}`;
+                const snippet = entry.message.slice(0, 120) + (entry.message.length > 120 ? '...' : '');
+                const options = {
+                  body: snippet,
+                  icon: '/favicon.ico'
+                };
+                try {
+                  const notification = new Notification(title, options);
+                  notification.onclick = () => {
+                    window.focus();
+                  };
+                } catch (e) {
+                  console.error('Error triggering notification:', e);
+                }
+              }
+            });
+
+            setParsedLogs(prev => {
+              parsed.forEach(entry => {
+                const lastEntryWithSameCid = [...prev].reverse().find(e => e.correlationId === entry.correlationId && e.correlationId !== '-');
+                if (lastEntryWithSameCid) {
+                  const prevTime = parseTimestamp(lastEntryWithSameCid.timestamp);
+                  const currTime = parseTimestamp(entry.timestamp);
+                  if (prevTime && currTime) {
+                    entry.deltaTimeMs = currTime.getTime() - prevTime.getTime();
+                  }
+                }
+              });
+
+              let next = [...prev, ...parsed];
+              if (next.length > 50000) {
+                next = next.slice(next.length - 50000);
+              }
+              // Re-index IDs consecutively
+              next.forEach((item, idx) => {
+                item.id = idx + 1;
+              });
+              return next;
+            });
+          }
+        },
+        (err) => {
+          console.error('Tail WebSocket error callback:', err);
+        }
+      );
+    } else {
+      disconnectTail();
+    }
+
+    return () => {
+      disconnectTail();
+    };
+  }, [isTailing, activeTailFilename, isTailPaused, parsers, rules, annotations]);
+
+
+  // Load and merge logic using Web Worker
   const loadAndMergeFiles = useCallback(async (fileNames: string[], uploaded: Record<string, string>, currentRules: PromotionRule[], activeParsers: ParserConfig[]) => {
     if (fileNames.length === 0) {
       setParsedLogs([]);
@@ -142,53 +302,22 @@ export function useLogViewerState() {
         })
       );
 
-      // 2. Parse and assign originalId, originFile
-      let allEntries: LogEntry[] = [];
-      contents.forEach(({ name, content }) => {
-        const parsed = parseLogs(content, activeParsers);
-        parsed.forEach(entry => {
-          entry.originFile = name;
-          entry.originalId = entry.id; // Preserve original file ID
-        });
-        allEntries = allEntries.concat(parsed);
-      });
+      // 2. Parse using the background Web Worker
+      const withDeltas = await parseWithWorker(contents, currentRules, activeParsers);
 
-      // 3. Apply promotion rules
-      allEntries.forEach(entry => {
-        for (const rule of currentRules) {
-          if (rule.enabled && (entry.message || '').includes(rule.pattern)) {
-            entry.level = rule.targetLevel;
-            entry.customBadge = rule.customBadge;
-            break; // Apply first matching rule
-          }
+      // Inject any existing comments / annotations on the main thread
+      let savedAnnotations: Record<string, string> = {};
+      try {
+        const saved = localStorage.getItem('logAnnotations');
+        if (saved) savedAnnotations = JSON.parse(saved);
+      } catch {}
+
+      withDeltas.forEach(entry => {
+        const entryKey = `${entry.originFile || 'upload'}::${entry.originalId || entry.id}`;
+        if (savedAnnotations[entryKey]) {
+          entry.annotation = savedAnnotations[entryKey];
         }
       });
-
-      // 4. Sort chronologically
-      const parsedDates = new Map<number, number>();
-      allEntries.forEach((e, idx) => {
-        const d = parseTimestamp(e.timestamp);
-        if (d) {
-          parsedDates.set(idx, d.getTime());
-        }
-      });
-
-      allEntries.sort((a, b) => {
-        const indexA = allEntries.indexOf(a);
-        const indexB = allEntries.indexOf(b);
-        const timeA = parsedDates.get(indexA) || 0;
-        const timeB = parsedDates.get(indexB) || 0;
-        if (timeA !== timeB) return timeA - timeB;
-        return indexA - indexB;
-      });
-
-      // 5. Reassign global sequence id (1 to N)
-      allEntries.forEach((entry, idx) => {
-        entry.id = idx + 1;
-      });
-
-      // 6. Calculate deltas chronologically per correlationId
-      const withDeltas = calculateDeltas(allEntries);
 
       setParsedLogs(withDeltas);
 
@@ -198,14 +327,25 @@ export function useLogViewerState() {
       const nextLevels = new Set([...base, ...parsedUnique]);
       setFilters(prev => ({ ...prev, activeLevels: nextLevels }));
     } catch (error) {
-      console.error("Error loading and merging files:", error);
+      console.error("Error loading and merging files using worker:", error);
     }
-  }, []);
+  }, [parseWithWorker]);
 
   // Sync loaded logs when files, uploaded files, or rules change
   useEffect(() => {
     loadAndMergeFiles(selectedFiles, uploadedFiles, rules, parsers);
   }, [selectedFiles, uploadedFiles, rules, parsers, loadAndMergeFiles]);
+
+
+  // Live folder sync via WebSocket
+  useEffect(() => {
+    connectFilesWatcher((updatedFiles) => {
+      setFiles(updatedFiles);
+    });
+    return () => {
+      disconnectFilesWatcher();
+    };
+  }, []);
 
   // Initial load
   useEffect(() => {
@@ -275,8 +415,23 @@ export function useLogViewerState() {
   const distribution = useMemo(() => buildDistribution(filteredLogs), [filteredLogs]);
   const totalPages = Math.max(1, Math.ceil(filteredLogs.length / PAGE_SIZE));
   const pageStart = (currentPage - 1) * PAGE_SIZE;
-  const pageLogs = filteredLogs.slice(pageStart, pageStart + PAGE_SIZE);
+  const pageLogs = useMemo(() => {
+    if (viewMode === 'virtual') {
+      return filteredLogs;
+    }
+    return filteredLogs.slice(pageStart, pageStart + PAGE_SIZE);
+  }, [filteredLogs, viewMode, pageStart]);
   const activeDiagnosis = useMemo(() => activeLog ? runDiagnosis(activeLog.message) : null, [activeLog]);
+
+  // Automatically navigate to the last page when tailing is active and new logs are appended
+  useEffect(() => {
+    if (isTailing && autoScrollTail && viewMode === 'paginated') {
+      const latestPage = Math.max(1, Math.ceil(filteredLogs.length / PAGE_SIZE));
+      if (currentPage !== latestPage) {
+        setCurrentPage(latestPage);
+      }
+    }
+  }, [filteredLogs.length, isTailing, autoScrollTail, viewMode, currentPage]);
 
   const handleFileCheckboxToggle = useCallback((fileName: string) => {
     setSelectedFiles(prev => {
@@ -502,13 +657,108 @@ export function useLogViewerState() {
     setCurrentPage(1);
   }, [parsedLogs]);
 
+  // --- FASE 3 PREMIUM ACTIONS ---
+  
+  // 1. Presets Actions
+  const saveCurrentAsPreset = useCallback((name: string, icon: string) => {
+    const safeLevels = filters.activeLevels instanceof Set 
+      ? Array.from(filters.activeLevels) 
+      : (filters.activeLevels || []);
+
+    const newPreset: FilterPreset = {
+      id: `preset_${Date.now()}`,
+      name,
+      icon,
+      filters: {
+        activeLevels: safeLevels,
+        activeService: filters.activeService,
+        searchTerm: filters.searchTerm,
+        isRegexSearch: filters.isRegexSearch,
+        isPayloadsOnly: filters.isPayloadsOnly,
+        dateFrom: filters.dateFrom ? (filters.dateFrom instanceof Date ? filters.dateFrom.toISOString() : String(filters.dateFrom)) : null,
+        dateTo: filters.dateTo ? (filters.dateTo instanceof Date ? filters.dateTo.toISOString() : String(filters.dateTo)) : null,
+        quickFilter: filters.quickFilter
+      },
+      createdAt: new Date().toISOString()
+    };
+
+    setPresets(prev => {
+      const next = [...prev, newPreset];
+      localStorage.setItem('filterPresets', JSON.stringify(next));
+      return next;
+    });
+    setActivePresetId(newPreset.id);
+  }, [filters]);
+
+  const applyPreset = useCallback((preset: FilterPreset) => {
+    setActivePresetId(preset.id);
+    
+    const parsePresetDate = (val: any): Date | null => {
+      if (!val) return null;
+      const d = new Date(val);
+      return isNaN(d.getTime()) ? null : d;
+    };
+
+    setFilters({
+      activeLevels: new Set(preset.filters.activeLevels),
+      activeService: preset.filters.activeService,
+      searchTerm: preset.filters.searchTerm,
+      isRegexSearch: preset.filters.isRegexSearch,
+      isPayloadsOnly: preset.filters.isPayloadsOnly,
+      dateFrom: parsePresetDate(preset.filters.dateFrom),
+      dateTo: parsePresetDate(preset.filters.dateTo),
+      correlationId: null,
+      quickFilter: preset.filters.quickFilter
+    });
+    setCurrentPage(1);
+  }, []);
+
+  const deletePreset = useCallback((id: string) => {
+    setPresets(prev => {
+      const next = prev.filter(p => p.id !== id);
+      localStorage.setItem('filterPresets', JSON.stringify(next));
+      return next;
+    });
+    if (activePresetId === id) {
+      setActivePresetId(null);
+    }
+  }, [activePresetId]);
+
+  // 2. Log Annotations Actions
+  const saveAnnotation = useCallback((log: LogEntry, text: string) => {
+    const noteKey = `${log.originFile || 'upload'}::${log.originalId || log.id}`;
+
+    setAnnotations(prev => {
+      const next = { ...prev };
+      if (text) {
+        next[noteKey] = text;
+      } else {
+        delete next[noteKey];
+      }
+      localStorage.setItem('logAnnotations', JSON.stringify(next));
+      return next;
+    });
+
+    // Atoms update state instantly
+    setParsedLogs(prev => {
+      return prev.map(entry => {
+        const entryKey = `${entry.originFile || 'upload'}::${entry.originalId || entry.id}`;
+        if (entryKey === noteKey) {
+          return { ...entry, annotation: text || undefined };
+        }
+        return entry;
+      });
+    });
+  }, []);
+
+
   const exportSession = useCallback(() => {
     const safeActiveLevels = filters.activeLevels instanceof Set 
       ? filters.activeLevels 
       : new Set(filters.activeLevels || []);
 
     const sessionData = {
-      version: '5.0',
+      version: '8.0',
       selectedFiles,
       uploadedFiles,
       filters: {
@@ -528,6 +778,7 @@ export function useLogViewerState() {
       currentPage,
       rules,
       pinnedKeys: Array.from(pinnedKeys),
+      annotations, // Persistent row-level comments included in export
     };
     
     const blob = new Blob([JSON.stringify(sessionData, null, 2)], { type: 'application/json' });
@@ -542,7 +793,22 @@ export function useLogViewerState() {
     URL.revokeObjectURL(url);
     setExportSuccess(true);
     setTimeout(() => setExportSuccess(false), 3000);
-  }, [selectedFiles, uploadedFiles, filters, sortColumn, sortDirection, currentPage, rules, pinnedKeys]);
+  }, [selectedFiles, uploadedFiles, filters, sortColumn, sortDirection, currentPage, rules, pinnedKeys, annotations]);
+
+  const downloadFilteredLogs = useCallback(() => {
+    const rawContent = filteredLogs.map(l => l.raw || '').join('\n');
+    const blob = new Blob([rawContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const dateStr = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
+    a.download = `logscope_filtered_${dateStr}.log`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [filteredLogs]);
+
 
   const importSession = useCallback((jsonData: any) => {
     try {
@@ -564,6 +830,22 @@ export function useLogViewerState() {
         return isNaN(d.getTime()) ? null : d;
       };
 
+      if (jsonData.annotations) {
+        setAnnotations(jsonData.annotations);
+        localStorage.setItem('logAnnotations', JSON.stringify(jsonData.annotations));
+        
+        // Dynamic atomic update to restore comments in UI
+        setParsedLogs(prev => {
+          return prev.map(entry => {
+            const entryKey = `${entry.originFile || 'upload'}::${entry.originalId || entry.id}`;
+            if (jsonData.annotations[entryKey]) {
+              return { ...entry, annotation: jsonData.annotations[entryKey] };
+            }
+            return entry;
+          });
+        });
+      }
+
       if (jsonData.filters) {
         const activeLevels = Array.isArray(jsonData.filters.activeLevels)
           ? new Set<LogLevel>(jsonData.filters.activeLevels)
@@ -584,6 +866,7 @@ export function useLogViewerState() {
       return false;
     }
   }, []);
+
 
   return {
     files,
@@ -662,7 +945,36 @@ export function useLogViewerState() {
     parsers,
     setParsers,
     isParserModalOpen,
-    setIsParserModalOpen
+    setIsParserModalOpen,
+    viewMode,
+    setViewMode,
+    isProcessing,
+    progress,
+    statusText,
+    // Live Tailing
+    isTailing,
+    setIsTailing,
+    isTailPaused,
+    setIsTailPaused,
+    autoScrollTail,
+    setAutoScrollTail,
+    // Presets
+    presets,
+    setPresets,
+    activePresetId,
+    setActivePresetId,
+    saveCurrentAsPreset,
+    applyPreset,
+    deletePreset,
+    // Annotations
+    annotations,
+    setAnnotations,
+    saveAnnotation,
+    // Fase 4 Upgrades
+    desktopAlertsEnabled,
+    toggleDesktopAlerts,
+    downloadFilteredLogs
   };
 }
 export type LogViewerState = ReturnType<typeof useLogViewerState>;
+

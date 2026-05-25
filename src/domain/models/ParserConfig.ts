@@ -63,5 +63,19 @@ export const DEFAULT_PARSERS: ParserConfig[] = [
       message: 4
     },
     correlationIdRegex: 'ssn:\\s*([^\\s\\-]+)'
+  },
+  {
+    id: 'format-d',
+    name: 'Formato D (Capa Media Java Custom / Live Test)',
+    enabled: true,
+    isSystem: true,
+    regex: '^(\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}[.,]\\d{3})\\s+\\[(TRACE|DEBUG|INFO|WARN|ERROR)\\]\\s+\\[([^\\]]+)\\]\\s+\\[([^\\]]+)\\]\\s+(.*)$',
+    mapping: {
+      timestamp: 1,
+      level: 2,
+      className: 3,
+      correlationId: 4,
+      message: 5
+    }
   }
 ];

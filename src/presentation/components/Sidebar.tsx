@@ -28,6 +28,8 @@ interface SidebarProps {
   togglePin: (log: LogEntry) => void;
   exportSession: () => void;
   importSession: (jsonData: any) => boolean;
+  desktopAlertsEnabled: boolean;
+  toggleDesktopAlerts: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -52,7 +54,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setLoadingFiles,
   togglePin,
   exportSession,
-  importSession
+  importSession,
+  desktopAlertsEnabled,
+  toggleDesktopAlerts
 }) => {
   
   const handleRefresh = useCallback(() => {
@@ -253,6 +257,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
+      {/* Desktop Alerts Section */}
+      <div className="sidebar-section" style={{ flex: '0 0 auto', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
+        <div className="section-title">
+          <span>NOTIFICACIONES ESCRITORIO</span>
+        </div>
+        <div 
+          style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'space-between',
+            background: 'rgba(0,0,0,0.15)',
+            padding: '8px 10px',
+            borderRadius: '6px',
+            border: '1px solid var(--border-color)',
+            marginTop: '8px'
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1, marginRight: '8px' }}>
+            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-primary)' }}>
+              Alertas en Inactividad
+            </span>
+            <span style={{ fontSize: '9px', color: 'var(--text-muted)', lineHeight: '1.2' }}>
+              Notificar ERROR/WARN en segundo plano
+            </span>
+          </div>
+          <label className="toggle-switch">
+            <input 
+              type="checkbox" 
+              checked={desktopAlertsEnabled} 
+              onChange={toggleDesktopAlerts} 
+            />
+            <span className="slider"></span>
+          </label>
+        </div>
+      </div>
+
       {/* Sidebar Rules Section */}
       <div className="sidebar-section" style={{ flex: '0 0 auto', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
         <div className="section-title">
@@ -392,17 +432,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
-      <div className="sidebar-footer">
-        <div className="theme-toggle-container">
-          <button className="theme-toggle-btn" onClick={() => setTheme(t => t === 'dark-theme' ? 'light-theme' : 'dark-theme')}>
-            <span className="material-icons-round sun-icon">light_mode</span>
-            <span className="material-icons-round moon-icon">dark_mode</span>
-            <span className="theme-text">{theme === 'dark-theme' ? 'Tema Oscuro' : 'Tema Claro'}</span>
-          </button>
+      <div className="sidebar-footer" style={{ gap: '10px', padding: '12px 16px' }}>
+        <div className="theme-select-container" style={{ width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', fontSize: '10px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+            <span className="material-icons-round" style={{ fontSize: '12px' }}>palette</span>
+            <span>TEMA VISUAL PRO</span>
+          </div>
+          <select 
+            value={theme}
+            onChange={(e) => setTheme(e.target.value)}
+            style={{
+              width: '100%',
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-primary)',
+              borderRadius: '6px',
+              padding: '8px 10px',
+              fontSize: '11px',
+              fontWeight: 500,
+              cursor: 'pointer',
+              outline: 'none',
+              boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.2)',
+              transition: 'border-color 0.2s'
+            }}
+          >
+            <option value="dark-theme">One Dark Pro (Default)</option>
+            <option value="light-theme">One Light Pro</option>
+            <option value="dracula-theme">Dracula Vampire</option>
+            <option value="nord-theme">Nordic Frost</option>
+            <option value="cyberpunk-theme">Cyberpunk Neon</option>
+            <option value="glass-theme">Glassmorphism (Crystal)</option>
+          </select>
         </div>
-        <div className="system-stats">
+        <div className="system-stats" style={{ marginTop: '4px' }}>
           <span className="system-status active"></span>
-          <span>Conectado a Logs</span>
+          <span>Watcher en Vivo Sincronizado</span>
         </div>
       </div>
     </aside>

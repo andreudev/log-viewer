@@ -82,7 +82,13 @@ export function parseLogs(text: string, parsers: ParserConfig[] = DEFAULT_PARSER
         }
 
         if (className !== '-' && className.includes('.')) {
-          className = className.split('.').pop() || className;
+          if (serviceName === '-') {
+            const parts = className.split('.');
+            serviceName = parts.pop() || '-';
+            className = parts.pop() || className;
+          } else {
+            className = className.split('.').pop() || className;
+          }
         } else if (className === '-' && config.classNameRegex) {
           const clMatch = message.match(new RegExp(config.classNameRegex, 'i'));
           if (clMatch) {
