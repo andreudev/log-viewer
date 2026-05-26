@@ -8,6 +8,9 @@ interface TailIndicatorProps {
   onTogglePause: () => void;
   onToggleAutoScroll: () => void;
   activeFilename: string | null;
+  tailBufferLimit: number;
+  setTailBufferLimit: (limit: number) => void;
+  pausedLogsCount: number;
 }
 
 export const TailIndicator: React.FC<TailIndicatorProps> = ({
@@ -17,7 +20,10 @@ export const TailIndicator: React.FC<TailIndicatorProps> = ({
   onToggleTailing,
   onTogglePause,
   onToggleAutoScroll,
-  activeFilename
+  activeFilename,
+  tailBufferLimit,
+  setTailBufferLimit,
+  pausedLogsCount
 }) => {
   if (!activeFilename) return null;
 
@@ -45,7 +51,7 @@ export const TailIndicator: React.FC<TailIndicatorProps> = ({
               <span className="material-icons-round">
                 {isTailPaused ? 'play_arrow' : 'pause'}
               </span>
-              <span className="btn-label">{isTailPaused ? (isTailPaused ? 'Reanudar' : 'Pausa') : 'Pausar'}</span>
+              <span className="btn-label">{isTailPaused ? 'Reanudar' : 'Pausar'}</span>
             </button>
 
             <button
@@ -58,17 +64,37 @@ export const TailIndicator: React.FC<TailIndicatorProps> = ({
               </span>
               <span className="btn-label">Auto-Scroll</span>
             </button>
+
+            <div className="divider-vr" />
+            
+            {/* Selector de Ring Buffer Limit */}
+            <div className="tail-buffer-wrapper">
+              <span className="tail-buffer-label">Buffer:</span>
+              <select
+                value={tailBufferLimit}
+                onChange={(e) => setTailBufferLimit(Number(e.target.value))}
+                className="tail-buffer-select"
+                title="Cantidad máxima de logs retenidos en memoria (Ring Buffer)"
+              >
+                <option value={1000}>1K logs</option>
+                <option value={5000}>5K logs</option>
+                <option value={10000}>10K logs</option>
+                <option value={25000}>25K logs</option>
+                <option value={50000}>50K logs</option>
+              </select>
+            </div>
           </div>
         )}
       </div>
       
       {isTailing && (
-        <span className="tail-streaming-badge animate-pulse">
+        <span className={`tail-streaming-badge ${isTailPaused ? 'paused-warning' : 'animate-pulse'}`} style={{ color: isTailPaused ? '#e5c07b' : 'var(--text-secondary)' }}>
           {isTailPaused 
-            ? 'Monitoreo pausado' 
+            ? `Monitoreo pausado${pausedLogsCount > 0 ? ` (+${pausedLogsCount} logs en cola)` : ''}` 
             : `Escuchando cambios en tiempo real: ${activeFilename}`}
         </span>
       )}
     </div>
   );
 };
+

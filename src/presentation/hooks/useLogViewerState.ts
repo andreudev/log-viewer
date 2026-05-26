@@ -77,6 +77,15 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
   const [isTailing, setIsTailing] = useState(false);
   const [isTailPaused, setIsTailPaused] = useState(false);
   const [autoScrollTail, setAutoScrollTail] = useState(true);
+  const [pausedLogs, setPausedLogs] = useState<LogEntry[]>([]);
+  const [tailBufferLimit, setTailBufferLimit] = useState<number>(() => {
+    return parseInt(localStorage.getItem('tailBufferLimit') || '10000', 10);
+  });
+
+  useEffect(() => {
+    localStorage.setItem('tailBufferLimit', String(tailBufferLimit));
+  }, [tailBufferLimit]);
+
 
   // 2. Presets of Filters states
   const [presets, setPresets] = useState<FilterPreset[]>(() => {
@@ -465,8 +474,18 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
   const tailOrigin = firstSelected.includes('::') ? firstSelected.split('::')[0] : 'local';
   const activeTailFilename = firstSelected.includes('::') ? firstSelected.split('::')[1] : (selectedFiles[0] || null);
 
+  const isTailPausedRef = useRef(isTailPaused);
   useEffect(() => {
-    if (isTailing && activeTailFilename && !isTailPaused) {
+    isTailPausedRef.current = isTailPaused;
+  }, [isTailPaused]);
+
+  const tailBufferLimitRef = useRef(tailBufferLimit);
+  useEffect(() => {
+    tailBufferLimitRef.current = tailBufferLimit;
+  }, [tailBufferLimit]);
+
+  useEffect(() => {
+    if (isTailing && activeTailFilename) {
       connectTail(
         activeTailFilename,
         (line) => {
@@ -523,28 +542,38 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
               }
             });
 
-            setParsedLogs(prev => {
-              parsed.forEach(entry => {
-                const lastEntryWithSameCid = [...prev].reverse().find(e => e.correlationId === entry.correlationId && e.correlationId !== '-');
-                if (lastEntryWithSameCid) {
-                  const prevTime = parseTimestamp(lastEntryWithSameCid.timestamp);
-                  const currTime = parseTimestamp(entry.timestamp);
-                  if (prevTime && currTime) {
-                    entry.deltaTimeMs = currTime.getTime() - prevTime.getTime();
-                  }
+            if (isTailPausedRef.current) {
+              setPausedLogs(prev => {
+                let next = [...prev, ...parsed];
+                if (next.length > tailBufferLimitRef.current) {
+                  next = next.slice(next.length - tailBufferLimitRef.current);
                 }
+                return next;
               });
+            } else {
+              setParsedLogs(prev => {
+                parsed.forEach(entry => {
+                  const lastEntryWithSameCid = [...prev].reverse().find(e => e.correlationId === entry.correlationId && e.correlationId !== '-');
+                  if (lastEntryWithSameCid) {
+                    const prevTime = parseTimestamp(lastEntryWithSameCid.timestamp);
+                    const currTime = parseTimestamp(entry.timestamp);
+                    if (prevTime && currTime) {
+                      entry.deltaTimeMs = currTime.getTime() - prevTime.getTime();
+                    }
+                  }
+                });
 
-              let next = [...prev, ...parsed];
-              if (next.length > 50000) {
-                next = next.slice(next.length - 50000);
-              }
-              // Re-index IDs consecutively
-              next.forEach((item, idx) => {
-                item.id = idx + 1;
+                let next = [...prev, ...parsed];
+                if (next.length > tailBufferLimitRef.current) {
+                  next = next.slice(next.length - tailBufferLimitRef.current);
+                }
+                // Re-index IDs consecutively
+                next.forEach((item, idx) => {
+                  item.id = idx + 1;
+                });
+                return next;
               });
-              return next;
-            });
+            }
           }
         },
         (err) => {
@@ -559,7 +588,37 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     return () => {
       disconnectTail();
     };
-  }, [isTailing, activeTailFilename, isTailPaused, parsers, rules, annotations, desktopAlertsEnabled, webhookEnabled, dispatchWebhookAlert, tailOrigin]);
+  }, [isTailing, activeTailFilename, parsers, rules, annotations, desktopAlertsEnabled, webhookEnabled, dispatchWebhookAlert, tailOrigin]);
+
+  // Effect to merge pausedLogs when resuming tailing
+  useEffect(() => {
+    if (!isTailPaused && pausedLogs.length > 0) {
+      setParsedLogs(prev => {
+        pausedLogs.forEach(entry => {
+          const lastEntryWithSameCid = [...prev].reverse().find(e => e.correlationId === entry.correlationId && e.correlationId !== '-');
+          if (lastEntryWithSameCid) {
+            const prevTime = parseTimestamp(lastEntryWithSameCid.timestamp);
+            const currTime = parseTimestamp(entry.timestamp);
+            if (prevTime && currTime) {
+              entry.deltaTimeMs = currTime.getTime() - prevTime.getTime();
+            }
+          }
+        });
+
+        let next = [...prev, ...pausedLogs];
+        if (next.length > tailBufferLimit) {
+          next = next.slice(next.length - tailBufferLimit);
+        }
+        // Re-index IDs consecutively
+        next.forEach((item, idx) => {
+          item.id = idx + 1;
+        });
+        return next;
+      });
+      setPausedLogs([]);
+    }
+  }, [isTailPaused, pausedLogs, tailBufferLimit]);
+
 
 
   // Load and merge logic using Web Worker and IndexedDB Cache
@@ -1390,6 +1449,9 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     setIsTailPaused,
     autoScrollTail,
     setAutoScrollTail,
+    pausedLogs,
+    tailBufferLimit,
+    setTailBufferLimit,
     // Presets
     presets,
     setPresets,

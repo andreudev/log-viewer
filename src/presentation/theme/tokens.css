@@ -4345,3 +4345,55 @@ tr:hover .note-icon-btn {
     size: A4;
   }
 }
+
+/* Tail Buffer Select Custom Styling */
+.tail-buffer-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+}
+
+.tail-buffer-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.tail-buffer-select {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 4px 20px 4px 6px;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+  font-weight: 500;
+  appearance: none; /* remove default arrow */
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23abb2bf'%3e%3cpath d='M7 10l5 5 5-5z'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 4px center;
+  background-size: 16px;
+  transition: border-color var(--transition-fast) ease, background-color var(--transition-fast) ease;
+}
+
+.tail-buffer-select:hover {
+  border-color: var(--accent-solid);
+  background-color: var(--bg-panel-hover);
+}
+
+.tail-buffer-select:focus {
+  border-color: var(--accent-solid);
+  box-shadow: 0 0 0 1px var(--accent-bg);
+}
+
+/* Print optimizations for streaming indicator */
+@media print {
+  .tail-indicator-container {
+    display: none !important;
+  }
+}
+

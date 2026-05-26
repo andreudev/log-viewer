@@ -213,6 +213,9 @@ export function App() {
               autoScrollTail={state.autoScrollTail}
               setAutoScrollTail={state.setAutoScrollTail}
               selectedFiles={state.selectedFiles}
+              tailBufferLimit={state.tailBufferLimit}
+              setTailBufferLimit={state.setTailBufferLimit}
+              pausedLogsCount={state.pausedLogs.length}
 
               presets={state.presets}
               activePresetId={state.activePresetId}

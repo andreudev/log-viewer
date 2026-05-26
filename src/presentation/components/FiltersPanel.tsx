@@ -40,6 +40,9 @@ interface FiltersPanelProps {
   autoScrollTail: boolean;
   setAutoScrollTail: React.Dispatch<React.SetStateAction<boolean>>;
   selectedFiles: string[];
+  tailBufferLimit: number;
+  setTailBufferLimit: (limit: number) => void;
+  pausedLogsCount: number;
 
   // Presets
   presets: FilterPreset[];
@@ -73,6 +76,9 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
   autoScrollTail,
   setAutoScrollTail,
   selectedFiles,
+  tailBufferLimit,
+  setTailBufferLimit,
+  pausedLogsCount,
 
   presets,
   activePresetId,
@@ -384,6 +390,9 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
               onTogglePause={() => setIsTailPaused(prev => !prev)}
               onToggleAutoScroll={() => setAutoScrollTail(prev => !prev)}
               activeFilename={selectedFiles[0] || null}
+              tailBufferLimit={tailBufferLimit}
+              setTailBufferLimit={setTailBufferLimit}
+              pausedLogsCount={pausedLogsCount}
             />
           </div>
 
