@@ -278,13 +278,13 @@ export const ParserModal: React.FC<ParserModalProps> = ({
                       </span>
                       
                       <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }} onClick={e => e.stopPropagation()}>
-                        <input 
-                          type="checkbox" 
-                          checked={p.enabled} 
-                          onChange={() => handleToggleEnable(p.id, p.enabled)}
-                          title={p.enabled ? "Desactivar parser" : "Activar parser"}
-                          style={{ cursor: 'pointer' }}
-                        />
+                        <label className="custom-checkbox-container" title={p.enabled ? "Desactivar parser" : "Activar parser"}>
+                          <input 
+                            type="checkbox" 
+                            checked={p.enabled} 
+                            onChange={() => handleToggleEnable(p.id, p.enabled)}
+                          />
+                        </label>
                       </div>
                     </div>
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { LogEntry } from '../../../domain/models/LogEntry';
 import { formatPayload } from '../../../domain/formatting/formatPayload';
 
@@ -8,6 +8,50 @@ interface XPathConsoleProps {
   payloadFormatted: string;
 }
 
+const getJsonPaths = (obj: any, prefix = '$', depth = 0): string[] => {
+  if (depth > 2 || obj === null || typeof obj !== 'object') return [];
+  let paths: string[] = [];
+  try {
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      const currentPath = `${prefix}.${key}`;
+      paths.push(currentPath);
+      if (typeof val === 'object' && val !== null) {
+        paths = paths.concat(getJsonPaths(val, currentPath, depth + 1));
+      }
+    }
+  } catch {}
+  return paths;
+};
+
+const getXmlPaths = (xmlStr: string): string[] => {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlStr, "application/xml");
+    const parserError = doc.querySelector('parsererror');
+    if (parserError) return [];
+    
+    const pathsSet = new Set<string>();
+    const traverse = (node: Node, currentPath: string) => {
+      if (node.nodeType === 1) { // Element Node
+        const nodeName = node.nodeName;
+        const newPath = currentPath ? `${currentPath}/${nodeName}` : nodeName;
+        pathsSet.add(`//${nodeName}`);
+        pathsSet.add(`/${newPath}`);
+        for (let i = 0; i < node.childNodes.length; i++) {
+          traverse(node.childNodes[i], newPath);
+        }
+      }
+    };
+    if (doc.documentElement) {
+      traverse(doc.documentElement, '');
+    }
+    return Array.from(pathsSet);
+  } catch {
+    return [];
+  }
+};
+
 export const XPathConsole: React.FC<XPathConsoleProps> = ({
   activeLog,
   payloadKind,
@@ -16,6 +60,21 @@ export const XPathConsole: React.FC<XPathConsoleProps> = ({
   const [queryPath, setQueryPath] = useState('');
   const [queryResult, setQueryResult] = useState<string | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
+
+  const suggestions = useMemo(() => {
+    if (!payloadFormatted || payloadKind === 'none') return [];
+    if (payloadKind === 'json') {
+      try {
+        let obj = JSON.parse(payloadFormatted);
+        return getJsonPaths(obj).slice(0, 15);
+      } catch {
+        return [];
+      }
+    } else if (payloadKind === 'xml') {
+      return getXmlPaths(payloadFormatted).slice(0, 15);
+    }
+    return [];
+  }, [payloadFormatted, payloadKind]);
 
   // Reiniciar consulta al cambiar de log
   useEffect(() => {
@@ -195,6 +254,45 @@ export const XPathConsole: React.FC<XPathConsoleProps> = ({
           </button>
         )}
       </div>
+
+      {suggestions.length > 0 && (
+        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <span style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Sugerencias de rutas:</span>
+          <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxHeight: '52px', overflowY: 'auto', padding: '2px' }}>
+            {suggestions.map((path, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setQueryPath(path)}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '12px',
+                  padding: '3px 8px',
+                  fontSize: '9px',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  fontFamily: 'monospace',
+                  transition: 'all 0.15s ease'
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.background = 'var(--accent-bg)';
+                  e.currentTarget.style.borderColor = 'var(--accent-solid)';
+                  e.currentTarget.style.color = 'var(--accent-solid)';
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                  e.currentTarget.style.borderColor = 'var(--border-color)';
+                  e.currentTarget.style.color = 'var(--text-secondary)';
+                }}
+              >
+                {path}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {(queryResult !== null || queryError !== null) && (
         <div style={{ marginTop: '10px', background: 'rgba(0,0,0,0.4)', borderRadius: '6px', padding: '8px 12px', border: '1px solid rgba(255,255,255,0.04)' }}>
           <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase' }}>

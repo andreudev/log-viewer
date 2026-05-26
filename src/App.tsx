@@ -14,10 +14,20 @@ import { LogLevel } from './domain/models/LogEntry';
 import { ParserModal } from './presentation/components/ParserModal';
 import { ErrorBoundary } from './presentation/components/ErrorBoundary';
 import { ProcessingOverlay } from './presentation/components/ProcessingOverlay';
+import { SettingsModal } from './presentation/components/SettingsModal';
+import { SessionDiffModal } from './presentation/components/SessionDiffModal';
 
 export function App() {
-  const state = useLogViewerState();
+  const [isSplitMode, setIsSplitMode] = useState(false);
+  const [activePane, setActivePane] = useState<'left' | 'right'>('left');
+
+  const leftState = useLogViewerState('left');
+  const rightState = useLogViewerState('right');
+
+  const state = activePane === 'left' ? leftState : rightState;
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isSessionDiffOpen, setIsSessionDiffOpen] = useState(false);
 
   const KPI_CARDS = useMemo(() => [
     { 
@@ -82,23 +92,25 @@ export function App() {
         handleFileCheckboxToggle={state.handleFileCheckboxToggle}
         handleFileSelectOnly={state.handleFileSelectOnly}
         handleFileUpload={state.handleFileUpload}
-        rules={state.rules}
-        setRules={state.setRules}
-        openRulesModal={state.openRulesModal}
         pinnedKeys={state.pinnedKeys}
         setPinnedKeys={state.setPinnedKeys}
         parsedLogs={state.parsedLogs}
         setActiveLog={state.setActiveLog}
         setIsDrawerOpen={state.setIsDrawerOpen}
-        theme={state.theme}
-        setTheme={state.setTheme}
         setFiles={state.setFiles}
         setLoadingFiles={state.setLoadingFiles}
         togglePin={state.togglePin}
-        exportSession={state.exportSession}
-        importSession={state.importSession}
-        desktopAlertsEnabled={state.desktopAlertsEnabled}
-        toggleDesktopAlerts={state.toggleDesktopAlerts}
+        // Split Mode
+        isSplitMode={isSplitMode}
+        activePane={activePane}
+        setActivePane={setActivePane}
+        // Open Settings Modal
+        openSettingsModal={() => setIsSettingsModalOpen(true)}
+        setFilters={state.setFilters}
+        setCurrentPage={state.setCurrentPage}
+        annotations={state.annotations}
+        setAnnotations={state.setAnnotations}
+        openSessionDiff={() => setIsSessionDiffOpen(true)}
       />
 
       <main className="main-content">
@@ -262,38 +274,97 @@ export function App() {
           </div>
           {state.activeTab === 'feed' ? (
             <ErrorBoundary fallbackTitle="Error en el feed de logs">
-            <LogsTable 
-              filteredLogs={state.filteredLogs}
-              pageLogs={state.pageLogs}
-              parsedLogs={state.parsedLogs}
-              currentPage={state.currentPage}
-              totalPages={state.totalPages}
-              setCurrentPage={state.setCurrentPage}
-              pageStart={state.pageStart}
-              activeLog={state.activeLog}
-              setActiveLog={state.setActiveLog}
-              setIsDrawerOpen={state.setIsDrawerOpen}
-              focusedIndex={state.focusedIndex}
-              setFocusedIndex={state.setFocusedIndex}
-              pinnedKeys={state.pinnedKeys}
-              togglePin={state.togglePin}
-              selectedFiles={state.selectedFiles}
-              sortColumn={state.sortColumn}
-              setSortColumn={state.setSortColumn}
-              sortDirection={state.sortDirection}
-              setSortDirection={state.setSortDirection}
-              searchTerm={state.filters.searchTerm}
-              isRegexSearch={state.filters.isRegexSearch}
-              setFilters={state.setFilters}
-              wrapLines={state.wrapLines}
-              setWrapLines={state.setWrapLines}
-              viewMode={state.viewMode}
-              setViewMode={state.setViewMode}
-              saveAnnotation={state.saveAnnotation}
-              isTailing={state.isTailing}
-              autoScrollTail={state.autoScrollTail}
-              downloadFilteredLogs={state.downloadFilteredLogs}
-            />
+              <div className={isSplitMode ? "split-feed-container" : "single-feed-container"}>
+                <div 
+                  className={`pane-container left-pane ${isSplitMode && activePane === 'left' ? 'pane-active' : ''}`}
+                  onClick={() => isSplitMode && setActivePane('left')}
+                >
+                  {isSplitMode && (
+                    <div className="pane-header-indicator">
+                      <span className="material-icons-round">view_sidebar</span> Panel Izquierdo {activePane === 'left' && "(Activo)"}
+                    </div>
+                  )}
+                  <LogsTable 
+                    filteredLogs={leftState.filteredLogs}
+                    pageLogs={leftState.pageLogs}
+                    parsedLogs={leftState.parsedLogs}
+                    currentPage={leftState.currentPage}
+                    totalPages={leftState.totalPages}
+                    setCurrentPage={leftState.setCurrentPage}
+                    pageStart={leftState.pageStart}
+                    activeLog={leftState.activeLog}
+                    setActiveLog={leftState.setActiveLog}
+                    setIsDrawerOpen={leftState.setIsDrawerOpen}
+                    focusedIndex={leftState.focusedIndex}
+                    setFocusedIndex={leftState.setFocusedIndex}
+                    pinnedKeys={leftState.pinnedKeys}
+                    togglePin={leftState.togglePin}
+                    selectedFiles={leftState.selectedFiles}
+                    sortColumn={leftState.sortColumn}
+                    setSortColumn={leftState.setSortColumn}
+                    sortDirection={leftState.sortDirection}
+                    setSortDirection={leftState.setSortDirection}
+                    searchTerm={leftState.filters.searchTerm}
+                    isRegexSearch={leftState.filters.isRegexSearch}
+                    setFilters={leftState.setFilters}
+                    wrapLines={leftState.wrapLines}
+                    setWrapLines={leftState.setWrapLines}
+                    viewMode={leftState.viewMode}
+                    setViewMode={leftState.setViewMode}
+                    saveAnnotation={leftState.saveAnnotation}
+                    isTailing={leftState.isTailing}
+                    autoScrollTail={leftState.autoScrollTail}
+                    downloadFilteredLogs={leftState.downloadFilteredLogs}
+                    isSplitMode={isSplitMode}
+                    setIsSplitMode={setIsSplitMode}
+                  />
+                </div>
+
+                {isSplitMode && (
+                  <div 
+                    className={`pane-container right-pane ${activePane === 'right' ? 'pane-active' : ''}`}
+                    onClick={() => setActivePane('right')}
+                  >
+                    <div className="pane-header-indicator">
+                      <span className="material-icons-round">view_sidebar</span> Panel Derecho {activePane === 'right' && "(Activo)"}
+                    </div>
+                    <LogsTable 
+                      filteredLogs={rightState.filteredLogs}
+                      pageLogs={rightState.pageLogs}
+                      parsedLogs={rightState.parsedLogs}
+                      currentPage={rightState.currentPage}
+                      totalPages={rightState.totalPages}
+                      setCurrentPage={rightState.setCurrentPage}
+                      pageStart={rightState.pageStart}
+                      activeLog={rightState.activeLog}
+                      setActiveLog={rightState.setActiveLog}
+                      setIsDrawerOpen={rightState.setIsDrawerOpen}
+                      focusedIndex={rightState.focusedIndex}
+                      setFocusedIndex={rightState.setFocusedIndex}
+                      pinnedKeys={rightState.pinnedKeys}
+                      togglePin={rightState.togglePin}
+                      selectedFiles={rightState.selectedFiles}
+                      sortColumn={rightState.sortColumn}
+                      setSortColumn={rightState.setSortColumn}
+                      sortDirection={rightState.sortDirection}
+                      setSortDirection={rightState.setSortDirection}
+                      searchTerm={rightState.filters.searchTerm}
+                      isRegexSearch={rightState.filters.isRegexSearch}
+                      setFilters={rightState.setFilters}
+                      wrapLines={rightState.wrapLines}
+                      setWrapLines={rightState.setWrapLines}
+                      viewMode={rightState.viewMode}
+                      setViewMode={rightState.setViewMode}
+                      saveAnnotation={rightState.saveAnnotation}
+                      isTailing={rightState.isTailing}
+                      autoScrollTail={rightState.autoScrollTail}
+                      downloadFilteredLogs={rightState.downloadFilteredLogs}
+                      isSplitMode={isSplitMode}
+                      setIsSplitMode={setIsSplitMode}
+                    />
+                  </div>
+                )}
+              </div>
             </ErrorBoundary>
           ) : (
             <div className="feed-viewport" style={{ padding: '20px' }}>
@@ -310,6 +381,8 @@ export function App() {
                   state.setActiveTab('feed');
                   state.setCurrentPage(1);
                 }}
+                setFilters={state.setFilters}
+                setCurrentPage={state.setCurrentPage}
               />
               </ErrorBoundary>
             </div>
@@ -334,6 +407,8 @@ export function App() {
           isRegexSearch={state.filters.isRegexSearch}
           setFilters={state.setFilters}
           setCurrentPage={state.setCurrentPage}
+          saveAnnotation={state.saveAnnotation}
+          systemSettings={state.systemSettings}
         />
       </ErrorBoundary>
 
@@ -364,6 +439,46 @@ export function App() {
       <ShortcutsModal 
         isOpen={state.isShortcutsModalOpen}
         onClose={() => state.setIsShortcutsModalOpen(false)}
+      />
+
+      <SessionDiffModal
+        isOpen={isSessionDiffOpen}
+        onClose={() => setIsSessionDiffOpen(false)}
+        isSplitMode={isSplitMode}
+        setIsSplitMode={setIsSplitMode}
+        leftState={leftState}
+        rightState={rightState}
+      />
+
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        theme={state.theme}
+        setTheme={state.setTheme}
+        exportSession={state.exportSession}
+        importSession={state.importSession}
+        desktopAlertsEnabled={state.desktopAlertsEnabled}
+        toggleDesktopAlerts={state.toggleDesktopAlerts}
+        webhookUrl={state.webhookUrl}
+        setWebhookUrl={state.setWebhookUrl}
+        webhookType={state.webhookType}
+        setWebhookType={state.setWebhookType}
+        webhookEnabled={state.webhookEnabled}
+        setWebhookEnabled={state.setWebhookEnabled}
+        sendTestWebhook={state.sendTestWebhook}
+        sshConnections={state.sshConnections}
+        sshLoading={state.sshLoading}
+        sshError={state.sshError}
+        saveSshConnection={state.saveSshConnection}
+        deleteSshConnection={state.deleteSshConnection}
+        testSshConnectionConfig={state.testSshConnectionConfig}
+        rules={state.rules}
+        setRules={state.setRules}
+        openRulesModal={state.openRulesModal}
+        localLogsDir={state.localLogsDir}
+        saveLocalLogsDir={state.saveLocalLogsDir}
+        systemSettings={state.systemSettings}
+        updateSystemSettings={state.updateSystemSettings}
       />
 
       <ProcessingOverlay 

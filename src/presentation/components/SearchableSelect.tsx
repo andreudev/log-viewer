@@ -80,7 +80,7 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
           cursor: 'pointer',
           textAlign: 'left',
           fontSize: '11px',
-          boxShadow: isOpen ? '0 0 6px rgba(97, 175, 239, 0.25)' : 'none',
+          boxShadow: 'none',
           transition: 'all 0.15s ease'
         }}
       >

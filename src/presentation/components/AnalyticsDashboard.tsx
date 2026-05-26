@@ -1,15 +1,25 @@
 import { useMemo, useState } from 'react';
 import { LogEntry, LogLevel } from '../../domain/models/LogEntry';
+import { ThreadConcurrencyDashboard } from './analytics/ThreadConcurrencyDashboard';
 
 interface AnalyticsDashboardProps {
   logs: LogEntry[];
   onSelectCorrelationId: (cid: string) => void;
   onSelectService: (service: string) => void;
+  setFilters: React.Dispatch<React.SetStateAction<any>>;
+  setCurrentPage: React.Dispatch<React.SetStateAction<number>>;
 }
 
-export function AnalyticsDashboard({ logs, onSelectCorrelationId, onSelectService }: AnalyticsDashboardProps) {
+export function AnalyticsDashboard({ 
+  logs, 
+  onSelectCorrelationId, 
+  onSelectService,
+  setFilters,
+  setCurrentPage
+}: AnalyticsDashboardProps) {
   const [hoveredSegment, setHoveredSegment] = useState<string | null>(null);
   const [hoveredBar, setHoveredBar] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<'metrics' | 'threads'>('metrics');
 
   // 1. Core Metrics
   const stats = useMemo(() => {
@@ -112,6 +122,35 @@ export function AnalyticsDashboard({ logs, onSelectCorrelationId, onSelectServic
       .slice(0, 5);
   }, [logs]);
 
+  // 4b. Average response time / latency by service
+  const serviceLatencies = useMemo(() => {
+    const data: Record<string, { total: number; count: number }> = {};
+    logs.forEach(l => {
+      if (l.deltaTimeMs !== undefined && l.service && l.service !== '-') {
+        if (!data[l.service]) {
+          data[l.service] = { total: 0, count: 0 };
+        }
+        data[l.service].total += l.deltaTimeMs;
+        data[l.service].count++;
+      }
+    });
+
+    const items = Object.entries(data)
+      .map(([service, val]) => ({
+        service,
+        avg: Math.round(val.total / val.count),
+        count: val.count
+      }))
+      .sort((a, b) => b.avg - a.avg)
+      .slice(0, 6);
+
+    const maxAvg = Math.max(...items.map(i => i.avg), 1);
+    return items.map(item => ({
+      ...item,
+      percentage: (item.avg / maxAvg) * 100
+    }));
+  }, [logs]);
+
   // 5. CSV Raw Auditor Exporter
   const handleExportCSV = () => {
     const headers = [
@@ -167,279 +206,389 @@ export function AnalyticsDashboard({ logs, onSelectCorrelationId, onSelectServic
             Métricas de transacciones y diagnóstico de tiempos de respuesta del API Gateway.
           </p>
         </div>
-        <button className="primary-button compact-btn" onClick={handleExportCSV}>
-          <span className="material-icons-round">download</span> Exportar Auditoría CSV
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button className="primary-button compact-btn" onClick={handleExportCSV}>
+            <span className="material-icons-round">download</span> Exportar Auditoría CSV
+          </button>
+          <button 
+            className="secondary-button compact-btn" 
+            onClick={() => window.print()}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              height: '30px',
+              padding: '0 12px',
+              borderRadius: '4px',
+              fontSize: '11px',
+              fontWeight: 600,
+              background: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-primary)',
+              cursor: 'pointer'
+            }}
+          >
+            <span className="material-icons-round">picture_as_pdf</span> Exportar Reporte PDF
+          </button>
+        </div>
+      </div>
+
+      {/* Tab Selectors (v15.0) */}
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border-color)', marginBottom: '20px', gap: '8px' }}>
+        <button 
+          className={`tab-btn`}
+          onClick={() => setActiveTab('metrics')}
+          style={{
+            padding: '8px 16px',
+            fontSize: '12.5px',
+            background: 'transparent',
+            border: 'none',
+            borderBottom: activeTab === 'metrics' ? '2px solid var(--accent-solid)' : '2px solid transparent',
+            color: activeTab === 'metrics' ? 'var(--text-primary)' : 'var(--text-secondary)',
+            cursor: 'pointer',
+            fontWeight: 600,
+            transition: 'all 0.15s'
+          }}
+        >
+          Métricas de Salud del Sistema
+        </button>
+        <button 
+          className={`tab-btn`}
+          onClick={() => setActiveTab('threads')}
+          style={{
+            padding: '8px 16px',
+            fontSize: '12.5px',
+            background: 'transparent',
+            border: 'none',
+            borderBottom: activeTab === 'threads' ? '2px solid var(--accent-solid)' : '2px solid transparent',
+            color: activeTab === 'threads' ? 'var(--text-primary)' : 'var(--text-secondary)',
+            cursor: 'pointer',
+            fontWeight: 600,
+            transition: 'all 0.15s'
+          }}
+        >
+          Actividad y Concurrencia de Hilos (Timeline)
         </button>
       </div>
 
-      {/* Grid de KPIs Secundarios */}
-      <div className="dashboard-grid" style={{ marginBottom: '24px' }}>
-        <div className="kpi-card gradient-blue" style={{ padding: '16px' }}>
-          <div className="card-icon"><span className="material-icons-round">bolt</span></div>
-          <div className="card-info">
-            <span className="card-label">Latencia Promedio</span>
-            <h2>{stats.avgLatency} ms</h2>
-            <span className="card-subtext">Basado en {stats.latencyCount} flujos correlacionados</span>
-          </div>
-        </div>
-        <div className="kpi-card gradient-red" style={{ padding: '16px' }}>
-          <div className="card-icon"><span className="material-icons-round">trending_up</span></div>
-          <div className="card-info">
-            <span className="card-label">Tasa de Error QA</span>
-            <h2>{stats.errorRate}%</h2>
-            <span className="card-subtext">{stats.errors} excepciones de {stats.total} logs</span>
-          </div>
-        </div>
-        <div className="kpi-card gradient-yellow" style={{ padding: '16px' }}>
-          <div className="card-icon"><span className="material-icons-round">speed</span></div>
-          <div className="card-info">
-            <span className="card-label">Latencia Máxima</span>
-            <h2>{(stats.maxLatency / 1000).toFixed(2)} s</h2>
-            <span className="card-subtext">Pico crítico detectado</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="analytics-charts-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(450px, 1fr))', gap: '20px', marginBottom: '24px' }}>
-        {/* Histograma de Latencias */}
-        <div className="panel-card" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>DISTRIBUCIÓN DE LATENCIA (Deltas)</span>
-            <span className="badge badge-outline" style={{ fontSize: '10px' }}>Histograma de Frecuencia</span>
-          </div>
-          {stats.latencyCount === 0 ? (
-            <div className="zero-state" style={{ height: '220px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
-              <span className="material-icons-round" style={{ fontSize: '32px', color: 'var(--text-muted)', marginBottom: '8px' }}>insights</span>
-              <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>Cargue logs con IDs de correlación para analizar latencias.</p>
+      {activeTab === 'threads' ? (
+        <ThreadConcurrencyDashboard 
+          parsedLogs={logs} 
+          setFilters={setFilters} 
+          setCurrentPage={setCurrentPage} 
+        />
+      ) : (
+        <>
+          {/* Grid de KPIs Secundarios */}
+          <div className="dashboard-grid" style={{ marginBottom: '24px' }}>
+            <div className="kpi-card gradient-blue" style={{ padding: '16px' }}>
+              <div className="card-icon"><span className="material-icons-round">bolt</span></div>
+              <div className="card-info">
+                <span className="card-label">Latencia Promedio</span>
+                <h2>{stats.avgLatency} ms</h2>
+                <span className="card-subtext">Basado en {stats.latencyCount} flujos correlacionados</span>
+              </div>
             </div>
-          ) : (
-            <div style={{ position: 'relative' }}>
-              {/* Native interactive SVG bar chart */}
-              <svg width="100%" height="220" viewBox="0 0 500 220" preserveAspectRatio="none">
-                {/* Gridlines */}
-                {[0, 25, 50, 75, 100].map((val) => (
-                  <line 
-                    key={val} 
-                    x1="40" 
-                    y1={180 - val * 1.5} 
-                    x2="480" 
-                    y2={180 - val * 1.5} 
-                    stroke="var(--border-color)" 
-                    strokeWidth="0.5" 
-                    strokeDasharray="4 4" 
-                  />
-                ))}
-                {/* Bars */}
-                {histogramData.map((b, idx) => {
-                  const barWidth = 50;
-                  const gap = 15;
-                  const x = 50 + idx * (barWidth + gap);
-                  const barHeight = b.percentage * 1.4; // Scale to fit nicely
-                  const y = 180 - barHeight;
-                  const isHovered = hoveredBar === idx;
-                  
-                  return (
-                    <g key={idx}>
-                      <rect
-                        x={x}
-                        y={y}
-                        width={barWidth}
-                        height={barHeight}
-                        rx="3"
-                        fill={isHovered ? 'var(--accent-solid)' : 'var(--accent-bg)'}
-                        stroke={isHovered ? 'var(--accent-solid)' : 'rgba(99, 102, 241, 0.4)'}
-                        strokeWidth="1.5"
-                        style={{ cursor: 'pointer', transition: 'all 0.2s ease' }}
-                        onMouseEnter={() => setHoveredBar(idx)}
-                        onMouseLeave={() => setHoveredBar(null)}
+            <div className="kpi-card gradient-red" style={{ padding: '16px' }}>
+              <div className="card-icon"><span className="material-icons-round">trending_up</span></div>
+              <div className="card-info">
+                <span className="card-label">Tasa de Error QA</span>
+                <h2>{stats.errorRate}%</h2>
+                <span className="card-subtext">{stats.errors} excepciones de {stats.total} logs</span>
+              </div>
+            </div>
+            <div className="kpi-card gradient-yellow" style={{ padding: '16px' }}>
+              <div className="card-icon"><span className="material-icons-round">speed</span></div>
+              <div className="card-info">
+                <span className="card-label">Latencia Máxima</span>
+                <h2>{(stats.maxLatency / 1000).toFixed(2)} s</h2>
+                <span className="card-subtext">Pico crítico detectado</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="analytics-charts-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(450px, 1fr))', gap: '20px', marginBottom: '24px' }}>
+            {/* Histograma de Latencias */}
+            <div className="panel-card" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>DISTRIBUCIÓN DE LATENCIA (Deltas)</span>
+                <span className="badge badge-outline" style={{ fontSize: '10px' }}>Histograma de Frecuencia</span>
+              </div>
+              {stats.latencyCount === 0 ? (
+                <div className="zero-state" style={{ height: '220px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+                  <span className="material-icons-round" style={{ fontSize: '32px', color: 'var(--text-muted)', marginBottom: '8px' }}>insights</span>
+                  <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>Cargue logs con IDs de correlación para analizar latencias.</p>
+                </div>
+              ) : (
+                <div style={{ position: 'relative' }}>
+                  {/* Native interactive SVG bar chart */}
+                  <svg width="100%" height="220" viewBox="0 0 500 220" preserveAspectRatio="none">
+                    {/* Gridlines */}
+                    {[0, 25, 50, 75, 100].map((val) => (
+                      <line 
+                        key={val} 
+                        x1="40" 
+                        y1={180 - val * 1.5} 
+                        x2="480" 
+                        y2={180 - val * 1.5} 
+                        stroke="var(--border-color)" 
+                        strokeWidth="0.5" 
+                        strokeDasharray="4 4" 
                       />
-                      {/* Label on top of bar when hovered */}
-                      {isHovered && (
-                        <text
-                          x={x + barWidth / 2}
-                          y={y - 6}
-                          textAnchor="middle"
-                          fill="var(--text-primary)"
-                          fontSize="10"
-                          fontWeight="bold"
-                        >
-                          {b.count} ({b.totalPercentage}%)
-                        </text>
-                      )}
-                      {/* X Axis Labels */}
-                      <text
-                        x={x + barWidth / 2}
-                        y="198"
-                        textAnchor="middle"
-                        fill="var(--text-muted)"
-                        fontSize="9.5"
-                        fontWeight="500"
-                      >
-                        {b.label}
-                      </text>
-                    </g>
-                  );
-                })}
-                {/* X-Axis line */}
-                <line x1="40" y1="180" x2="480" y2="180" stroke="var(--border-color)" strokeWidth="1.5" />
-              </svg>
-            </div>
-          )}
-        </div>
-
-        {/* Distribución de Errores por Servicio */}
-        <div className="panel-card" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>EXCEPCIONES POR SERVICIO / MÉTODO</span>
-            <span className="badge badge-outline" style={{ fontSize: '10px' }}>Dispersión QA</span>
-          </div>
-          {stats.errors === 0 ? (
-            <div className="zero-state" style={{ height: '220px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
-              <span className="material-icons-round" style={{ fontSize: '32px', color: 'var(--text-muted)', marginBottom: '8px' }}>check_circle_outline</span>
-              <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>¡Fabuloso! No se han detectado logs con errores.</p>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '20px', height: '220px' }}>
-              {/* Donut Chart SVG */}
-              <div style={{ width: '160px', height: '160px', flexShrink: 0, position: 'relative' }}>
-                <svg width="100%" height="100%" viewBox="0 0 100 100">
-                  <circle cx="50" cy="50" r="40" fill="transparent" stroke="var(--border-color)" strokeWidth="10" />
-                  {/* Arc segments using dasharray */}
-                  {(() => {
-                    let accumulatedPercent = 0;
-                    return errorServices.map((es, idx) => {
-                      const circumference = 2 * Math.PI * 40; // ~251.327
-                      const strokeDash = (es.count / stats.errors) * circumference;
-                      const strokeOffset = circumference - strokeDash + (accumulatedPercent / stats.errors) * circumference;
-                      accumulatedPercent += es.count;
-                      const isHovered = hoveredSegment === es.service;
+                    ))}
+                    {/* Bars */}
+                    {histogramData.map((b, idx) => {
+                      const barWidth = 50;
+                      const gap = 15;
+                      const x = 50 + idx * (barWidth + gap);
+                      const barHeight = b.percentage * 1.4; // Scale to fit nicely
+                      const y = 180 - barHeight;
+                      const isHovered = hoveredBar === idx;
                       
                       return (
-                        <circle
+                        <g key={idx}>
+                          <rect
+                            x={x}
+                            y={y}
+                            width={barWidth}
+                            height={barHeight}
+                            rx="3"
+                            fill={isHovered ? 'var(--accent-solid)' : 'var(--accent-bg)'}
+                            stroke={isHovered ? 'var(--accent-solid)' : 'rgba(99, 102, 241, 0.4)'}
+                            strokeWidth="1.5"
+                            style={{ cursor: 'pointer', transition: 'all 0.2s ease' }}
+                            onMouseEnter={() => setHoveredBar(idx)}
+                            onMouseLeave={() => setHoveredBar(null)}
+                          />
+                          {/* Label on top of bar when hovered */}
+                          {isHovered && (
+                            <text
+                              x={x + barWidth / 2}
+                              y={y - 6}
+                              textAnchor="middle"
+                              fill="var(--text-primary)"
+                              fontSize="10"
+                              fontWeight="bold"
+                            >
+                              {b.count} ({b.totalPercentage}%)
+                            </text>
+                          )}
+                          {/* X Axis Labels */}
+                          <text
+                            x={x + barWidth / 2}
+                            y="198"
+                            textAnchor="middle"
+                            fill="var(--text-muted)"
+                            fontSize="9.5"
+                            fontWeight="500"
+                          >
+                            {b.label}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    {/* X-Axis line */}
+                    <line x1="40" y1="180" x2="480" y2="180" stroke="var(--border-color)" strokeWidth="1.5" />
+                  </svg>
+                </div>
+              )}
+            </div>
+
+            {/* Distribución de Errores por Servicio */}
+            <div className="panel-card" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>EXCEPCIONES POR SERVICIO / MÉTODO</span>
+                <span className="badge badge-outline" style={{ fontSize: '10px' }}>Dispersión QA</span>
+              </div>
+              {stats.errors === 0 ? (
+                <div className="zero-state" style={{ height: '220px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+                  <span className="material-icons-round" style={{ fontSize: '32px', color: 'var(--text-muted)', marginBottom: '8px' }}>check_circle_outline</span>
+                  <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>¡Fabuloso! No se han detectado logs con errores.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '20px', height: '220px' }}>
+                  {/* Donut Chart SVG */}
+                  <div style={{ width: '160px', height: '160px', flexShrink: 0, position: 'relative' }}>
+                    <svg width="100%" height="100%" viewBox="0 0 100 100">
+                      <circle cx="50" cy="50" r="40" fill="transparent" stroke="var(--border-color)" strokeWidth="10" />
+                      {/* Arc segments using dasharray */}
+                      {(() => {
+                        let accumulatedPercent = 0;
+                        return errorServices.map((es, idx) => {
+                          const circumference = 2 * Math.PI * 40; // ~251.327
+                          const strokeDash = (es.count / stats.errors) * circumference;
+                          const strokeOffset = circumference - strokeDash + (accumulatedPercent / stats.errors) * circumference;
+                          accumulatedPercent += es.count;
+                          const isHovered = hoveredSegment === es.service;
+                          
+                          return (
+                            <circle
+                              key={idx}
+                              cx="50"
+                              cy="50"
+                              r="40"
+                              fill="transparent"
+                              stroke={es.color}
+                              strokeWidth={isHovered ? 13 : 10}
+                              strokeDasharray={`${strokeDash} ${circumference}`}
+                              strokeDashoffset={-strokeOffset}
+                              transform="rotate(-90 50 50)"
+                              style={{ 
+                                cursor: 'pointer', 
+                                transition: 'stroke-width 0.2s ease, opacity 0.2s ease',
+                                opacity: hoveredSegment === null || isHovered ? 1 : 0.65 
+                              }}
+                              onMouseEnter={() => setHoveredSegment(es.service)}
+                              onMouseLeave={() => setHoveredSegment(null)}
+                            />
+                          );
+                        });
+                      })()}
+                    </svg>
+                    {/* Center Value */}
+                    <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', pointerEvents: 'none', textAlign: 'center' }}>
+                      <div style={{ fontSize: '20px', fontWeight: 700, color: 'var(--text-primary)' }}>{stats.errors}</div>
+                      <div style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Errores</div>
+                    </div>
+                  </div>
+
+                  {/* Legend with interactive highlight */}
+                  <div className="donut-legend" style={{ flex: 1, overflowY: 'auto', maxHeight: '180px', display: 'flex', flexDirection: 'column', gap: '6px', paddingRight: '4px' }}>
+                    {errorServices.slice(0, 6).map((es, idx) => {
+                      const isHovered = hoveredSegment === es.service;
+                      return (
+                        <div 
                           key={idx}
-                          cx="50"
-                          cy="50"
-                          r="40"
-                          fill="transparent"
-                          stroke={es.color}
-                          strokeWidth={isHovered ? 13 : 10}
-                          strokeDasharray={`${strokeDash} ${circumference}`}
-                          strokeDashoffset={-strokeOffset}
-                          transform="rotate(-90 50 50)"
+                          className={`legend-row ${isHovered ? 'active' : ''}`}
                           style={{ 
-                            cursor: 'pointer', 
-                            transition: 'stroke-width 0.2s ease, opacity 0.2s ease',
-                            opacity: hoveredSegment === null || isHovered ? 1 : 0.65 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'space-between', 
+                            padding: '4px 6px',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            background: isHovered ? 'var(--bg-panel-hover)' : 'transparent',
+                            transition: 'background 0.15s ease'
                           }}
                           onMouseEnter={() => setHoveredSegment(es.service)}
                           onMouseLeave={() => setHoveredSegment(null)}
-                        />
+                          onClick={() => onSelectService(es.service)}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                            <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: es.color, flexShrink: 0 }}></div>
+                            <span style={{ fontSize: '11px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={es.service}>
+                              {es.service}
+                            </span>
+                          </div>
+                          <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)', marginLeft: '8px', flexShrink: 0 }}>
+                            {es.count} ({es.percentage.toFixed(0)}%)
+                          </span>
+                        </div>
                       );
-                    });
-                  })()}
-                </svg>
-                {/* Center Value */}
-                <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center', pointerEvents: 'none' }}>
-                  <div style={{ fontSize: '20px', fontWeight: 700, color: 'var(--text-primary)' }}>{stats.errors}</div>
-                  <div style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Errores</div>
-                </div>
-              </div>
-
-              {/* Legend with interactive highlight */}
-              <div className="donut-legend" style={{ flex: 1, overflowY: 'auto', maxHeight: '180px', display: 'flex', flexDirection: 'column', gap: '6px', paddingRight: '4px' }}>
-                {errorServices.slice(0, 6).map((es, idx) => {
-                  const isHovered = hoveredSegment === es.service;
-                  return (
-                    <div 
-                      key={idx}
-                      className={`legend-row ${isHovered ? 'active' : ''}`}
-                      style={{ 
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        justifyContent: 'space-between', 
-                        padding: '4px 6px',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        background: isHovered ? 'var(--bg-panel-hover)' : 'transparent',
-                        transition: 'background 0.15s ease'
-                      }}
-                      onMouseEnter={() => setHoveredSegment(es.service)}
-                      onMouseLeave={() => setHoveredSegment(null)}
-                      onClick={() => onSelectService(es.service)}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                        <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: es.color, flexShrink: 0 }}></div>
-                        <span style={{ fontSize: '11px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={es.service}>
-                          {es.service}
-                        </span>
+                    })}
+                    {errorServices.length > 6 && (
+                      <div style={{ fontSize: '9.5px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '4px' }}>
+                        + {errorServices.length - 6} servicios más
                       </div>
-                      <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)', marginLeft: '8px', flexShrink: 0 }}>
-                        {es.count} ({es.percentage.toFixed(0)}%)
-                      </span>
-                    </div>
-                  );
-                })}
-                {errorServices.length > 6 && (
-                  <div style={{ fontSize: '9.5px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '4px' }}>
-                    + {errorServices.length - 6} servicios más
+                    )}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
 
-      {/* Latencias Críticas (> 3000ms) */}
-      <div className="panel-card" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>TRANSACCIONES CRÍTICAS LENTAS (&gt; 3.0s)</span>
-          <span className="badge badge-outline" style={{ fontSize: '10px', background: 'rgba(239, 68, 68, 0.08)', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)' }}>Alerta de Latencia</span>
-        </div>
-        {slowTransactions.length === 0 ? (
-          <div className="zero-state" style={{ height: '100px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-            <span className="material-icons-round" style={{ fontSize: '20px', color: 'var(--text-muted)', marginRight: '8px' }}>celebration</span>
-            <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>Excelente: No hay transacciones individuales que superen los 3.0 segundos.</p>
+            {/* Latencia Promedio por Servicio */}
+            <div className="panel-card" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>LATENCIA PROMEDIO POR SERVICIO</span>
+                <span className="badge badge-outline" style={{ fontSize: '10px' }}>Rendimiento (ms)</span>
+              </div>
+              {serviceLatencies.length === 0 ? (
+                <div className="zero-state" style={{ height: '220px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+                  <span className="material-icons-round" style={{ fontSize: '32px', color: 'var(--text-muted)', marginBottom: '8px' }}>speed</span>
+                  <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>Cargue logs con deltas de tiempo para analizar latencias por servicio.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '220px', justifyContent: 'center' }}>
+                  {serviceLatencies.map((sl, idx) => (
+                    <div 
+                      key={idx} 
+                      style={{ display: 'flex', flexDirection: 'column', gap: '4px', cursor: 'pointer' }}
+                      onClick={() => onSelectService(sl.service)}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-secondary)' }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }} title={sl.service}>{sl.service}</span>
+                        <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{sl.avg} ms <span style={{ fontSize: '9px', fontWeight: 'normal', color: 'var(--text-muted)' }}>({sl.count} reqs)</span></span>
+                      </div>
+                      <div style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.04)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                        <div 
+                          style={{ 
+                            width: `${sl.percentage}%`, 
+                            height: '100%', 
+                            background: `linear-gradient(90deg, var(--accent-bg) 0%, var(--accent-solid) 100%)`,
+                            borderRadius: '4px',
+                            transition: 'width 0.4s ease'
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        ) : (
-          <div className="slow-transactions-table-wrapper" style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11.5px', textAlign: 'left' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
-                  <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600 }}>Registro ID</th>
-                  <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600 }}>Marca de Tiempo</th>
-                  <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600 }}>Servicio / Método</th>
-                  <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600 }}>ID de Correlación</th>
-                  <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600, textAlign: 'right' }}>Latencia Delta</th>
-                  <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600, textAlign: 'right' }}>Acción</th>
-                </tr>
-              </thead>
-              <tbody>
-                {slowTransactions.map((t, idx) => (
-                  <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', transition: 'background 0.15s ease' }} className="slow-row-hover">
-                    <td style={{ padding: '10px', fontWeight: 600, color: 'var(--text-primary)' }}>#{t.id}</td>
-                    <td style={{ padding: '10px', color: 'var(--text-secondary)' }}>{t.timestamp}</td>
-                    <td style={{ padding: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>{t.service}</td>
-                    <td style={{ padding: '10px' }}><span className="badge badge-correlation" style={{ margin: 0 }}>{t.correlationId}</span></td>
-                    <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, color: '#ef4444' }}>
-                      +{(t.deltaTimeMs! / 1000).toFixed(2)} s
-                    </td>
-                    <td style={{ padding: '10px', textAlign: 'right' }}>
-                      <button 
-                        className="secondary-button compact-btn" 
-                        title="Aislar flujo en la tabla de logs"
-                        onClick={() => onSelectCorrelationId(t.correlationId)}
-                      >
-                        <span className="material-icons-round" style={{ fontSize: 13, marginRight: 2 }}>insights</span> Aislar Flujo
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+
+          {/* Latencias Críticas (> 3000ms) */}
+          <div className="panel-card" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>TRANSACCIONES CRÍTICAS LENTAS (&gt; 3.0s)</span>
+              <span className="badge badge-outline" style={{ fontSize: '10px', background: 'rgba(239, 68, 68, 0.08)', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)' }}>Alerta de Latencia</span>
+            </div>
+            {slowTransactions.length === 0 ? (
+              <div className="zero-state" style={{ height: '100px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                <span className="material-icons-round" style={{ fontSize: '20px', color: 'var(--text-muted)', marginRight: '8px' }}>celebration</span>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>Excelente: No hay transacciones individuales que superen los 3.0 segundos.</p>
+              </div>
+            ) : (
+              <div className="slow-transactions-table-wrapper" style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11.5px', textAlign: 'left' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
+                      <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600 }}>Registro ID</th>
+                      <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600 }}>Marca de Tiempo</th>
+                      <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600 }}>Servicio / Método</th>
+                      <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600 }}>ID de Correlación</th>
+                      <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600, textAlign: 'right' }}>Latencia Delta</th>
+                      <th style={{ padding: '8px 10px', color: 'var(--text-muted)', fontWeight: 600, textAlign: 'right' }}>Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {slowTransactions.map((t, idx) => (
+                      <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', transition: 'background 0.15s ease' }} className="slow-row-hover">
+                        <td style={{ padding: '10px', fontWeight: 600, color: 'var(--text-primary)' }}>#{t.id}</td>
+                        <td style={{ padding: '10px', color: 'var(--text-secondary)' }}>{t.timestamp}</td>
+                        <td style={{ padding: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>{t.service}</td>
+                        <td style={{ padding: '10px' }}><span className="badge badge-correlation" style={{ margin: 0 }}>{t.correlationId}</span></td>
+                        <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, color: '#ef4444' }}>
+                          +{(t.deltaTimeMs! / 1000).toFixed(2)} s
+                        </td>
+                        <td style={{ padding: '10px', textAlign: 'right' }}>
+                          <button 
+                            className="secondary-button compact-btn" 
+                            title="Aislar flujo en la tabla de logs"
+                            onClick={() => onSelectCorrelationId(t.correlationId)}
+                          >
+                            <span className="material-icons-round" style={{ fontSize: 13, marginRight: 2 }}>insights</span> Aislar Flujo
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }

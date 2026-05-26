@@ -37,11 +37,13 @@ const state: GlobalTailSocketState = typeof window !== 'undefined'
  * @param filename Name of the log file in the logs directory.
  * @param onLineReceived Callback executed when a new line is received from the server.
  * @param onError Callback executed when a connection error occurs.
+ * @param origin Source of the file ('local' or SSH connection ID).
  */
 export function connectTail(
   filename: string,
   onLineReceived: (line: string) => void,
-  onError: (err: Event) => void
+  onError: (err: Event) => void,
+  origin = 'local'
 ) {
   // Tear down any existing connection
   disconnectTail();
@@ -53,7 +55,7 @@ export function connectTail(
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const host = window.location.host || 'localhost:3000';
-  const url = `${protocol}//${host}/ws/tail?filename=${encodeURIComponent(filename)}`;
+  const url = `${protocol}//${host}/ws/tail?filename=${encodeURIComponent(filename)}&origin=${encodeURIComponent(origin)}`;
 
   function establishConnection() {
     if (!state.shouldReconnect) return;

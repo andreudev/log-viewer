@@ -37,6 +37,8 @@ interface LogsTableProps {
   isTailing: boolean;
   autoScrollTail: boolean;
   downloadFilteredLogs: () => void;
+  isSplitMode?: boolean;
+  setIsSplitMode?: (mode: boolean) => void;
 }
 
 export const LogsTable: React.FC<LogsTableProps> = ({
@@ -69,7 +71,9 @@ export const LogsTable: React.FC<LogsTableProps> = ({
   saveAnnotation,
   isTailing,
   autoScrollTail,
-  downloadFilteredLogs
+  downloadFilteredLogs,
+  isSplitMode = false,
+  setIsSplitMode
 }) => {
   const isMultiFileActive = useMemo(() => selectedFiles.length > 1, [selectedFiles]);
   const virtuosoRef = useRef<any>(null);
@@ -195,6 +199,32 @@ export const LogsTable: React.FC<LogsTableProps> = ({
             <span className="material-icons-round" style={{ fontSize: '14px' }}>file_download</span>
             <span>Descargar</span>
           </button>
+
+          {setIsSplitMode && (
+            <button 
+              className={`secondary-button ${isSplitMode ? 'active-accent-btn' : ''}`}
+              onClick={(e) => { e.stopPropagation(); setIsSplitMode(!isSplitMode); }}
+              title="Dividir pantalla para comparar feeds / archivos en paralelo"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                height: '28px',
+                padding: '0 10px',
+                borderRadius: '6px',
+                fontSize: '11px',
+                fontWeight: 500,
+                background: isSplitMode ? 'var(--accent-bg)' : 'rgba(255, 255, 255, 0.05)',
+                border: '1px solid ' + (isSplitMode ? 'var(--accent-solid)' : 'var(--border-color)'),
+                color: isSplitMode ? 'var(--accent-solid)' : 'var(--text-primary)',
+                cursor: 'pointer',
+                transition: 'background 0.2s, border-color 0.2s'
+              }}
+            >
+              <span className="material-icons-round" style={{ fontSize: '14px' }}>split_screen</span>
+              <span>{isSplitMode ? 'Unir Pantalla' : 'Dividir Pantalla'}</span>
+            </button>
+          )}
         </div>
       </div>
       

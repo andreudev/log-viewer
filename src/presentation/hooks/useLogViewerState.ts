@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { defaultLevels, parseLogs } from '../../domain/parsing/parseLogs';
 import { applyFilters, FilterState, SortColumn, SortDirection } from '../../application/usecases/applyFilters';
 import { buildStats, buildDistribution } from '../../application/usecases/buildStats';
-import { fetchFileContent, fetchFiles, LogFileMeta } from '../../infrastructure/api/filesApi';
+import { fetchFileContent, fetchFiles, LogFileMeta, fetchSettings, saveSettings } from '../../infrastructure/api/filesApi';
 import { LogEntry, LogLevel } from '../../domain/models/LogEntry';
 import { PromotionRule, DEFAULT_RULES } from '../../domain/models/PromotionRule';
 import { runDiagnosis } from '../../domain/parsing/runDiagnosis';
@@ -12,11 +12,38 @@ import { useParseWorker } from './useParseWorker';
 import { connectTail, disconnectTail } from '../../infrastructure/api/tailSocket';
 import { connectFilesWatcher, disconnectFilesWatcher } from '../../infrastructure/api/filesSocket';
 import { FilterPreset } from '../../domain/models/FilterPreset';
+import { getLogsFromCache, saveLogsToCache } from '../../infrastructure/db/indexedDBHelper';
 
+
+export interface SshConnectionConfig {
+  id?: string;
+  name: string;
+  host: string;
+  port?: number;
+  username: string;
+  authType: 'password' | 'key';
+  password?: string;
+  privateKeyContent?: string;
+  privateKeyPath?: string;
+  logDir?: string;
+  hasPassword?: boolean;
+  hasPrivateKey?: boolean;
+}
+
+export interface AnnotationDetail {
+  text: string;
+  timestamp: string;
+  service: string;
+  level: string;
+  correlationId: string;
+  message: string;
+  originFile?: string;
+  logId?: number;
+}
 
 const PAGE_SIZE = 200;
 
-export function useLogViewerState() {
+export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
   const [files, setFiles] = useState<LogFileMeta[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [parsedLogs, setParsedLogs] = useState<LogEntry[]>([]);
@@ -64,7 +91,7 @@ export function useLogViewerState() {
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
 
   // 3. Annotations states
-  const [annotations, setAnnotations] = useState<Record<string, string>>(() => {
+  const [annotations, setAnnotations] = useState<Record<string, string | AnnotationDetail>>(() => {
     try {
       const saved = localStorage.getItem('logAnnotations');
       if (saved) return JSON.parse(saved);
@@ -102,6 +129,167 @@ export function useLogViewerState() {
     }
   }, [desktopAlertsEnabled]);
 
+  // --- FASE 8: LOCAL DIRECTORY SETTINGS & AI CONFIG ---
+  const [systemSettings, setSystemSettings] = useState<SystemSettings>({
+    localLogsDir: '',
+    aiEnabled: false,
+    aiProvider: 'gemini',
+    aiEndpoint: '',
+    aiModel: 'gemini-1.5-flash',
+    hasAiApiKey: false
+  });
+
+  const saveLocalLogsDir = useCallback(async (dirPath: string) => {
+    try {
+      const updated = await saveSettings({ localLogsDir: dirPath });
+      setSystemSettings(updated);
+      // Re-fetch files to immediately update sidebar
+      const freshFiles = await fetchFiles();
+      setFiles(freshFiles);
+    } catch (err: any) {
+      throw new Error(err.message || 'Error al guardar directorio local');
+    }
+  }, [setFiles]);
+
+  const updateSystemSettings = useCallback(async (newSettings: Partial<SystemSettings> & { aiApiKey?: string }) => {
+    try {
+      const updated = await saveSettings(newSettings);
+      setSystemSettings(updated);
+      if (newSettings.localLogsDir !== undefined) {
+        const freshFiles = await fetchFiles();
+        setFiles(freshFiles);
+      }
+    } catch (err: any) {
+      throw new Error(err.message || 'Error al guardar la configuración');
+    }
+  }, [setFiles]);
+
+  // --- FASE 5: WEBHOOK STATES & DISPATCHERS ---
+  const [webhookUrl, setWebhookUrl] = useState<string>(() => {
+    return localStorage.getItem('webhookUrl') || '';
+  });
+  const [webhookType, setWebhookType] = useState<'slack' | 'discord' | 'teams'>(() => {
+    return (localStorage.getItem('webhookType') as 'slack' | 'discord' | 'teams') || 'slack';
+  });
+  const [webhookEnabled, setWebhookEnabled] = useState<boolean>(() => {
+    return localStorage.getItem('webhookEnabled') === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('webhookUrl', webhookUrl);
+  }, [webhookUrl]);
+
+  useEffect(() => {
+    localStorage.setItem('webhookType', webhookType);
+  }, [webhookType]);
+
+  useEffect(() => {
+    localStorage.setItem('webhookEnabled', String(webhookEnabled));
+  }, [webhookEnabled]);
+
+  const dispatchWebhookAlert = useCallback((entry: LogEntry) => {
+    if (!webhookUrl) return;
+
+    const dateStr = entry.timestamp || new Date().toISOString();
+    const serviceStr = entry.service || 'N/A';
+    const levelStr = entry.level || 'INFO';
+    const cidStr = entry.correlationId || 'N/A';
+    const messageSnippet = (entry.message || '').slice(0, 500) + ((entry.message || '').length > 500 ? '...' : '');
+
+    let payload: any = {};
+    if (webhookType === 'slack') {
+      payload = {
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `🚨 *[LogScope Alert]* - Log Elevado / Crítico`
+            }
+          },
+          {
+            type: 'section',
+            fields: [
+              { type: 'mrkdwn', text: `*Nivel:*\n${levelStr}` },
+              { type: 'mrkdwn', text: `*Servicio:*\n${serviceStr}` },
+              { type: 'mrkdwn', text: `*Correlación:*\n${cidStr}` },
+              { type: 'mrkdwn', text: `*Fecha:*\n${dateStr}` }
+            ]
+          },
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `*Mensaje:*\n\`\`\`${messageSnippet}\`\`\` \n*Archivo Origen:* \`${entry.originFile || 'N/A'}\``
+            }
+          }
+        ]
+      };
+    } else if (webhookType === 'discord') {
+      payload = {
+        embeds: [
+          {
+            title: `🚨 [LogScope Alert] - Log Elevado / Crítico`,
+            color: levelStr === 'ERROR' ? 15158332 : (levelStr === 'WARN' ? 15105570 : 3447003),
+            fields: [
+              { name: 'Nivel', value: levelStr, inline: true },
+              { name: 'Servicio', value: serviceStr, inline: true },
+              { name: 'Correlación', value: cidStr, inline: true },
+              { name: 'Fecha', value: dateStr, inline: true }
+            ],
+            description: `**Mensaje:**\n\`\`\`\n${messageSnippet}\n\`\`\`\n**Archivo Origen:** \`${entry.originFile || 'N/A'}\``
+          }
+        ]
+      };
+    } else if (webhookType === 'teams') {
+      payload = {
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "themeColor": levelStr === 'ERROR' ? "D63031" : (levelStr === 'WARN' ? "F1C40F" : "3498DB"),
+        "summary": "LogScope Alert",
+        "sections": [{
+          "activityTitle": `🚨 [LogScope Alert] - Log Elevado / Crítico`,
+          "facts": [
+            { "name": "Nivel", "value": levelStr },
+            { "name": "Servicio", "value": serviceStr },
+            { "name": "Correlación", "value": cidStr },
+            { "name": "Fecha", "value": dateStr },
+            { "name": "Archivo Origen", "value": entry.originFile || 'N/A' }
+          ],
+          "text": `**Mensaje:**\n\`\`\`\n${messageSnippet}\n\`\`\``
+        }]
+      };
+    }
+
+    fetch('/api/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ webhookUrl, payload })
+    }).then(res => res.json())
+      .then(data => {
+        console.log('[Webhook] Response:', data);
+      })
+      .catch(err => {
+        console.error('[Webhook] Failed dispatching:', err);
+      });
+  }, [webhookUrl, webhookType]);
+
+  const sendTestWebhook = useCallback(() => {
+    const mockEntry: LogEntry = {
+      id: 9999,
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      service: 'TestService',
+      correlationId: 'test-cid-12345',
+      message: 'Esta es una alerta de prueba generada automáticamente desde el panel de LogScope.',
+      className: 'TestClass',
+      thread: 'main',
+      originFile: 'test-webhook-alert.log',
+      raw: 'MOCK LOG LINE'
+    };
+    dispatchWebhookAlert(mockEntry);
+  }, [dispatchWebhookAlert]);
+
   // Sync viewMode
   useEffect(() => {
     localStorage.setItem('viewMode', viewMode);
@@ -115,6 +303,85 @@ export function useLogViewerState() {
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
   const [rulesJsonInput, setRulesJsonInput] = useState('');
   const [jsonError, setJsonError] = useState<string | null>(null);
+
+  const [sshConnections, setSshConnections] = useState<SshConnectionConfig[]>([]);
+  const [sshLoading, setSshLoading] = useState(false);
+  const [sshError, setSshError] = useState<string | null>(null);
+
+  const loadSshConnections = useCallback(async () => {
+    setSshLoading(true);
+    setSshError(null);
+    try {
+      const res = await fetch('/api/ssh-connections');
+      if (!res.ok) throw new Error('Failed to load connections');
+      const data = await res.json();
+      setSshConnections(data);
+    } catch (err: any) {
+      setSshError(err.message);
+    } finally {
+      setSshLoading(false);
+    }
+  }, []);
+
+  const saveSshConnection = useCallback(async (config: SshConnectionConfig) => {
+    setSshLoading(true);
+    setSshError(null);
+    try {
+      const res = await fetch('/api/ssh-connections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      });
+      if (!res.ok) throw new Error('Failed to save connection');
+      await loadSshConnections();
+      
+      const filesRes = await fetchFiles();
+      setFiles(filesRes);
+    } catch (err: any) {
+      setSshError(err.message);
+      throw err;
+    } finally {
+      setSshLoading(false);
+    }
+  }, [loadSshConnections, setFiles]);
+
+  const deleteSshConnection = useCallback(async (id: string) => {
+    setSshLoading(true);
+    setSshError(null);
+    try {
+      const res = await fetch(`/api/ssh-connections/${id}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) throw new Error('Failed to delete connection');
+      await loadSshConnections();
+      
+      const filesRes = await fetchFiles();
+      setFiles(filesRes);
+    } catch (err: any) {
+      setSshError(err.message);
+    } finally {
+      setSshLoading(false);
+    }
+  }, [loadSshConnections, setFiles]);
+
+  const testSshConnectionConfig = useCallback(async (config: SshConnectionConfig) => {
+    try {
+      const res = await fetch('/api/ssh-connections/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Connection test failed');
+      return data.message || 'Connection successful!';
+    } catch (err: any) {
+      throw err;
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSshConnections();
+  }, [loadSshConnections]);
 
   const [rules, setRules] = useState<PromotionRule[]>(() => {
     try {
@@ -148,7 +415,7 @@ export function useLogViewerState() {
 
   const [pinnedKeys, setPinnedKeys] = useState<Set<string>>(() => {
     try {
-      const saved = localStorage.getItem('pinnedKeys');
+      const saved = localStorage.getItem(`pinnedKeys_${paneId}`);
       if (saved) {
         return new Set(JSON.parse(saved));
       }
@@ -167,10 +434,10 @@ export function useLogViewerState() {
       } else {
         next.add(key);
       }
-      localStorage.setItem('pinnedKeys', JSON.stringify(Array.from(next)));
+      localStorage.setItem(`pinnedKeys_${paneId}`, JSON.stringify(Array.from(next)));
       return next;
     });
-  }, []);
+  }, [paneId]);
 
   const [compareQueue, setCompareQueue] = useState<LogEntry[]>([]);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
@@ -194,7 +461,9 @@ export function useLogViewerState() {
   }, [rules]);
 
   // Live WebSocket Tailing Synchronizer
-  const activeTailFilename = selectedFiles[0] || null;
+  const firstSelected = selectedFiles[0] || '';
+  const tailOrigin = firstSelected.includes('::') ? firstSelected.split('::')[0] : 'local';
+  const activeTailFilename = firstSelected.includes('::') ? firstSelected.split('::')[1] : (selectedFiles[0] || null);
 
   useEffect(() => {
     if (isTailing && activeTailFilename && !isTailPaused) {
@@ -218,8 +487,9 @@ export function useLogViewerState() {
 
               // Inject annotation if already exists
               const noteKey = `${entry.originFile}::${entry.originalId}`;
-              if (annotations[noteKey]) {
-                entry.annotation = annotations[noteKey];
+              const savedAnn = annotations[noteKey];
+              if (savedAnn) {
+                entry.annotation = typeof savedAnn === 'object' && savedAnn !== null ? (savedAnn as any).text : (savedAnn as string);
               }
 
               // Trigger desktop notification if backgrounded and is critical severity or customBadge
@@ -242,6 +512,14 @@ export function useLogViewerState() {
                 } catch (e) {
                   console.error('Error triggering notification:', e);
                 }
+              }
+
+              // Trigger webhook alert if enabled and is critical severity or customBadge
+              if (
+                webhookEnabled &&
+                (entry.level === 'ERROR' || entry.level === 'WARN' || entry.customBadge)
+              ) {
+                dispatchWebhookAlert(entry);
               }
             });
 
@@ -271,7 +549,8 @@ export function useLogViewerState() {
         },
         (err) => {
           console.error('Tail WebSocket error callback:', err);
-        }
+        },
+        tailOrigin
       );
     } else {
       disconnectTail();
@@ -280,10 +559,10 @@ export function useLogViewerState() {
     return () => {
       disconnectTail();
     };
-  }, [isTailing, activeTailFilename, isTailPaused, parsers, rules, annotations]);
+  }, [isTailing, activeTailFilename, isTailPaused, parsers, rules, annotations, desktopAlertsEnabled, webhookEnabled, dispatchWebhookAlert, tailOrigin]);
 
 
-  // Load and merge logic using Web Worker
+  // Load and merge logic using Web Worker and IndexedDB Cache
   const loadAndMergeFiles = useCallback(async (fileNames: string[], uploaded: Record<string, string>, currentRules: PromotionRule[], activeParsers: ParserConfig[]) => {
     if (fileNames.length === 0) {
       setParsedLogs([]);
@@ -291,45 +570,168 @@ export function useLogViewerState() {
     }
     
     try {
-      // 1. Fetch all contents in parallel
-      const contents = await Promise.all(
-        fileNames.map(async name => {
-          if (uploaded[name]) {
-            return { name, content: uploaded[name] };
-          }
-          const content = await fetchFileContent(name);
-          return { name, content };
-        })
-      );
+      const rulesHash = JSON.stringify(currentRules);
+      const parsersHash = JSON.stringify(activeParsers);
 
-      // 2. Parse using the background Web Worker
-      const withDeltas = await parseWithWorker(contents, currentRules, activeParsers);
+      // Check if all requested files are cached
+      let allLogsCached = true;
+      const cachedParts: { name: string; logs: LogEntry[] }[] = [];
+      const uncachedFileNames: string[] = [];
+
+      for (const name of fileNames) {
+        let size = 0;
+        let mtime = '';
+        
+        if (uploaded[name]) {
+          size = uploaded[name].length;
+          mtime = 'uploaded';
+        } else {
+          const parts = name.split('::');
+          const origin = parts.length > 1 ? parts[0] : 'local';
+          const filename = parts.length > 1 ? parts[1] : name;
+          const meta = files.find(f => f.name === filename && (f.origin || 'local') === origin);
+          if (meta) {
+            size = meta.sizeBytes;
+            mtime = meta.modifiedAt;
+          }
+        }
+
+        if (size > 0 && mtime) {
+          const cached = await getLogsFromCache(name, size, mtime, rulesHash, parsersHash);
+          if (cached) {
+            cachedParts.push({ name, logs: cached });
+          } else {
+            allLogsCached = false;
+            uncachedFileNames.push(name);
+          }
+        } else {
+          allLogsCached = false;
+          uncachedFileNames.push(name);
+        }
+      }
+
+      let finalLogs: LogEntry[] = [];
+
+      if (allLogsCached) {
+        // If all files are cached, we merge them
+        const combined: LogEntry[] = [];
+        cachedParts.forEach(part => {
+          combined.push(...part.logs);
+        });
+        finalLogs = combined;
+      } else {
+        // Fetch contents for uncached files only, parse them, cache them, and merge with cached ones
+        const contents = await Promise.all(
+          fileNames.map(async name => {
+            if (uploaded[name]) {
+              return { name, content: uploaded[name] };
+            }
+            const parts = name.split('::');
+            const origin = parts.length > 1 ? parts[0] : 'local';
+            const filename = parts.length > 1 ? parts[1] : name;
+
+            const content = await fetchFileContent(filename, origin);
+            return { name: filename, fileKey: name, content };
+          })
+        );
+
+        // Parse all using the background Web Worker
+        const withDeltas = await parseWithWorker(
+          contents.map(c => ({ name: c.name, content: c.content })),
+          currentRules,
+          activeParsers
+        );
+
+        // Group parsed results by source file and save to cache
+        for (const name of fileNames) {
+          let size = 0;
+          let mtime = '';
+          
+          if (uploaded[name]) {
+            size = uploaded[name].length;
+            mtime = 'uploaded';
+          } else {
+            const parts = name.split('::');
+            const origin = parts.length > 1 ? parts[0] : 'local';
+            const filename = parts.length > 1 ? parts[1] : name;
+            const meta = files.find(f => f.name === filename && (f.origin || 'local') === origin);
+            if (meta) {
+              size = meta.sizeBytes;
+              mtime = meta.modifiedAt;
+            }
+          }
+
+          if (size > 0 && mtime) {
+            const filenameForMatch = name.includes('::') ? name.split('::')[1] : name;
+            const fileLogs = withDeltas.filter(l => l.originFile === filenameForMatch);
+            await saveLogsToCache(name, size, mtime, rulesHash, parsersHash, fileLogs);
+          }
+        }
+
+        finalLogs = withDeltas;
+      }
+
+      // Re-index all log items chronologically if we have multiple files
+      if (fileNames.length > 1) {
+        // Sort chronologically using parseTimestamp helper
+        finalLogs.sort((a, b) => {
+          const tA = parseTimestamp(a.timestamp);
+          const tB = parseTimestamp(b.timestamp);
+          if (tA && tB) return tA.getTime() - tB.getTime();
+          if (tA && !tB) return -1;
+          if (!tA && tB) return 1;
+          return 0;
+        });
+
+        // Recalculate deltas and ids
+        finalLogs.forEach((item, idx) => {
+          item.id = idx + 1;
+        });
+
+        // Recalculate deltas per correlationId chronologically
+        const lastTimes = new Map<string, Date>();
+        finalLogs.forEach(item => {
+          if (item.correlationId && item.correlationId !== '-') {
+            const currentT = parseTimestamp(item.timestamp);
+            if (currentT) {
+              const lastT = lastTimes.get(item.correlationId);
+              if (lastT) {
+                item.deltaTimeMs = currentT.getTime() - lastT.getTime();
+              } else {
+                delete item.deltaTimeMs;
+              }
+              lastTimes.set(item.correlationId, currentT);
+            }
+          }
+        });
+      }
 
       // Inject any existing comments / annotations on the main thread
-      let savedAnnotations: Record<string, string> = {};
+      let savedAnnotations: Record<string, any> = {};
       try {
         const saved = localStorage.getItem('logAnnotations');
         if (saved) savedAnnotations = JSON.parse(saved);
       } catch {}
 
-      withDeltas.forEach(entry => {
+      finalLogs.forEach(entry => {
         const entryKey = `${entry.originFile || 'upload'}::${entry.originalId || entry.id}`;
-        if (savedAnnotations[entryKey]) {
-          entry.annotation = savedAnnotations[entryKey];
+        const savedAnn = savedAnnotations[entryKey];
+        if (savedAnn) {
+          entry.annotation = typeof savedAnn === 'object' && savedAnn !== null ? (savedAnn as any).text : (savedAnn as string);
         }
       });
 
-      setParsedLogs(withDeltas);
+      setParsedLogs(finalLogs);
 
       // Auto-activate all parsed levels (base + dynamic)
-      const parsedUnique = withDeltas.map(l => l.level).filter(Boolean);
+      const parsedUnique = finalLogs.map(l => l.level).filter(Boolean);
       const base = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'REQ', 'RESP'];
       const nextLevels = new Set([...base, ...parsedUnique]);
       setFilters(prev => ({ ...prev, activeLevels: nextLevels }));
     } catch (error) {
-      console.error("Error loading and merging files using worker:", error);
+      console.error("Error loading and merging files using worker/cache:", error);
     }
-  }, [parseWithWorker]);
+  }, [parseWithWorker, files]);
 
   // Sync loaded logs when files, uploaded files, or rules change
   useEffect(() => {
@@ -350,13 +752,21 @@ export function useLogViewerState() {
   // Initial load
   useEffect(() => {
     setLoadingFiles(true);
+    
+    // Load general system settings
+    fetchSettings().then(s => {
+      setSystemSettings(s);
+    }).catch(err => {
+      console.error("Error loading system settings:", err);
+    });
+
     fetchFiles().then(async (f) => {
       setFiles(f);
       setLoadingFiles(false);
       
       let initialSelected: string[] = [];
       try {
-        const saved = localStorage.getItem('selectedFiles');
+        const saved = localStorage.getItem(`selectedFiles_${paneId}`);
         if (saved) {
           initialSelected = JSON.parse(saved);
         }
@@ -365,7 +775,7 @@ export function useLogViewerState() {
       }
 
       if (initialSelected.length === 0) {
-        const lastActiveName = localStorage.getItem('activeFileName');
+        const lastActiveName = localStorage.getItem(`activeFileName_${paneId}`);
         if (lastActiveName) {
           const found = f.find(file => file.name === lastActiveName);
           if (found) {
@@ -380,10 +790,10 @@ export function useLogViewerState() {
 
       if (initialSelected.length > 0) {
         setSelectedFiles(initialSelected);
-        localStorage.setItem('selectedFiles', JSON.stringify(initialSelected));
+        localStorage.setItem(`selectedFiles_${paneId}`, JSON.stringify(initialSelected));
       }
     });
-  }, []);
+  }, [paneId]);
 
   const uniqueServices = useMemo(() =>
     Array.from(new Set(parsedLogs.map(l => l.service).filter(s => s && s !== '-'))).sort(), [parsedLogs]
@@ -441,7 +851,7 @@ export function useLogViewerState() {
       } else {
         next = [...prev, fileName];
       }
-      localStorage.setItem('selectedFiles', JSON.stringify(next));
+      localStorage.setItem(`selectedFiles_${paneId}`, JSON.stringify(next));
       return next;
     });
     setFilters(p => ({
@@ -459,12 +869,12 @@ export function useLogViewerState() {
     setCurrentPage(1);
     setActiveLog(null);
     setIsDrawerOpen(false);
-  }, []);
+  }, [paneId]);
 
   const handleFileSelectOnly = useCallback((fileName: string) => {
     setSelectedFiles([fileName]);
-    localStorage.setItem('selectedFiles', JSON.stringify([fileName]));
-    localStorage.setItem('activeFileName', fileName);
+    localStorage.setItem(`selectedFiles_${paneId}`, JSON.stringify([fileName]));
+    localStorage.setItem(`activeFileName_${paneId}`, fileName);
     setFilters(p => ({
       ...p,
       activeService: 'ALL',
@@ -480,7 +890,7 @@ export function useLogViewerState() {
     setCurrentPage(1);
     setActiveLog(null);
     setIsDrawerOpen(false);
-  }, []);
+  }, [paneId]);
 
   const handleFileUpload = useCallback((file: File) => {
     const reader = new FileReader();
@@ -495,11 +905,11 @@ export function useLogViewerState() {
 
       setSelectedFiles(prev => {
         const next = prev.includes(file.name) ? prev : [...prev, file.name];
-        localStorage.setItem('selectedFiles', JSON.stringify(next));
+        localStorage.setItem(`selectedFiles_${paneId}`, JSON.stringify(next));
         return next;
       });
       
-      localStorage.setItem('activeFileName', file.name);
+      localStorage.setItem(`activeFileName_${paneId}`, file.name);
       setFilters(p => ({
         ...p,
         activeService: 'ALL',
@@ -519,7 +929,7 @@ export function useLogViewerState() {
       setIsDrawerOpen(false);
     };
     reader.readAsText(file);
-  }, []);
+  }, [paneId]);
 
   const copyText = useCallback(async (text: string) => {
     try {
@@ -731,7 +1141,16 @@ export function useLogViewerState() {
     setAnnotations(prev => {
       const next = { ...prev };
       if (text) {
-        next[noteKey] = text;
+        next[noteKey] = {
+          text,
+          timestamp: log.timestamp,
+          service: log.service,
+          level: log.level,
+          correlationId: log.correlationId,
+          message: log.message,
+          originFile: log.originFile || 'upload',
+          logId: log.id
+        };
       } else {
         delete next[noteKey];
       }
@@ -749,7 +1168,18 @@ export function useLogViewerState() {
         return entry;
       });
     });
-  }, []);
+
+    // Update activeLog if it's the one being annotated
+    setActiveLog(prev => {
+      if (prev) {
+        const prevKey = `${prev.originFile || 'upload'}::${prev.originalId || prev.id}`;
+        if (prevKey === noteKey) {
+          return { ...prev, annotation: text || undefined };
+        }
+      }
+      return prev;
+    });
+  }, [setActiveLog]);
 
 
   const exportSession = useCallback(() => {
@@ -838,8 +1268,10 @@ export function useLogViewerState() {
         setParsedLogs(prev => {
           return prev.map(entry => {
             const entryKey = `${entry.originFile || 'upload'}::${entry.originalId || entry.id}`;
-            if (jsonData.annotations[entryKey]) {
-              return { ...entry, annotation: jsonData.annotations[entryKey] };
+            const savedAnn = jsonData.annotations[entryKey];
+            if (savedAnn) {
+              const text = typeof savedAnn === 'object' && savedAnn !== null ? (savedAnn as any).text : (savedAnn as string);
+              return { ...entry, annotation: text };
             }
             return entry;
           });
@@ -973,7 +1405,28 @@ export function useLogViewerState() {
     // Fase 4 Upgrades
     desktopAlertsEnabled,
     toggleDesktopAlerts,
-    downloadFilteredLogs
+    downloadFilteredLogs,
+    // Fase 5 Upgrades
+    webhookUrl,
+    setWebhookUrl,
+    webhookType,
+    setWebhookType,
+    webhookEnabled,
+    setWebhookEnabled,
+    sendTestWebhook,
+    // SSH connection manager variables and actions
+    sshConnections,
+    sshLoading,
+    sshError,
+    loadSshConnections,
+    saveSshConnection,
+    deleteSshConnection,
+    testSshConnectionConfig,
+    // Fase 8 Dynamic Local logs directory settings
+    localLogsDir: systemSettings.localLogsDir,
+    saveLocalLogsDir,
+    systemSettings,
+    updateSystemSettings
   };
 }
 export type LogViewerState = ReturnType<typeof useLogViewerState>;
