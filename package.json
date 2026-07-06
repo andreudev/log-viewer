@@ -1,0 +1,30 @@
+{
+  "name": "capa-media-log-viewer",
+  "version": "1.0.0",
+  "description": "Premium Log Visualizer for Capa Media",
+  "main": "server.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "openai": "^6.39.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-virtuoso": "^4.18.7",
+    "ssh2": "^1.17.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  },
+  "author": "Antigravity Pair",
+  "license": "ISC"
+}
