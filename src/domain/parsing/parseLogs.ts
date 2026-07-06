@@ -74,6 +74,9 @@ export function parseLogs(text: string, parsers: ParserConfig[] = DEFAULT_PARSER
         let serviceName = mapping.service ? match[mapping.service] || '-' : '-';
         let correlationId = mapping.correlationId ? match[mapping.correlationId] || '-' : '-';
         let message = mapping.message ? match[mapping.message] || '' : '';
+        // Numeric endpoint code (e.g. "1015") extracted from `[ Endpoint: 1015 ]`.
+        // Kept separate from `service` so the UI can do exact-match filtering.
+        let endpointCode: string | undefined;
 
         // Extracciones secundarias
         if (correlationId === '-' && config.correlationIdRegex) {
@@ -99,7 +102,11 @@ export function parseLogs(text: string, parsers: ParserConfig[] = DEFAULT_PARSER
 
         if (serviceName === '-' && config.serviceRegex) {
           const sMatch = message.match(new RegExp(config.serviceRegex, 'i'));
-          if (sMatch) serviceName = `API Endpoint ${sMatch[1]}`;
+          if (sMatch) {
+            endpointCode = sMatch[1];
+            // Prefer a short, scannable label for the table
+            serviceName = `EP ${endpointCode}`;
+          }
         }
 
         // Limpieza de mensajes para el Formato A (sistema)
@@ -159,7 +166,8 @@ export function parseLogs(text: string, parsers: ParserConfig[] = DEFAULT_PARSER
           service: serviceName,
           correlationId,
           message: finalMessage,
-          raw: line
+          raw: line,
+          endpoint: endpointCode,
         };
         break; // Coincidió, no procesar el resto de parsers para esta línea
       }

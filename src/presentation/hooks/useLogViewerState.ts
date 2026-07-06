@@ -26,8 +26,10 @@ export interface SshConnectionConfig {
   privateKeyContent?: string;
   privateKeyPath?: string;
   logDir?: string;
+  sudoPassword?: string;
   hasPassword?: boolean;
   hasPrivateKey?: boolean;
+  hasSudoPassword?: boolean;
 }
 
 export interface AnnotationDetail {
@@ -469,10 +471,13 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     localStorage.setItem('promotionRules', JSON.stringify(rules));
   }, [rules]);
 
-  // Live WebSocket Tailing Synchronizer
-  const firstSelected = selectedFiles[0] || '';
-  const tailOrigin = firstSelected.includes('::') ? firstSelected.split('::')[0] : 'local';
-  const activeTailFilename = firstSelected.includes('::') ? firstSelected.split('::')[1] : (selectedFiles[0] || null);
+  // Live WebSocket Tailing Synchronizer - supports multiple selected files
+  // (e.g. two `capa-media-avt-logger.log` from different SSH origins at once).
+  const tailSubscriptions = selectedFiles.map(key => {
+    const [origin, ...rest] = key.split('::');
+    const filename = rest.join('::'); // handles names that contain "::"
+    return { key, origin: origin || 'local', filename };
+  });
 
   const isTailPausedRef = useRef(isTailPaused);
   useEffect(() => {
@@ -485,16 +490,26 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
   }, [tailBufferLimit]);
 
   useEffect(() => {
-    if (isTailing && activeTailFilename) {
+    if (!isTailing) {
+      // User toggled tail off -> drop every channel
+      disconnectTail();
+      return;
+    }
+
+    // Subscribe to every selected file. connectTail is idempotent for the
+    // same (filename, origin) key, so this is cheap to re-run.
+    for (const sub of tailSubscriptions) {
       connectTail(
-        activeTailFilename,
+        sub.filename,
         (line) => {
           const parsed = parseLogs(line, parsers);
           if (parsed.length > 0) {
             parsed.forEach(entry => {
-              entry.originFile = activeTailFilename;
+              // Tag the line with the full key so per-file annotations work
+              // and so downstream filters can distinguish sources.
+              entry.originFile = sub.key;
               entry.originalId = entry.id;
-              
+
               // Apply severity promotion rules
               for (const rule of rules) {
                 if (rule.enabled && (entry.message || '').includes(rule.pattern)) {
@@ -577,18 +592,17 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
           }
         },
         (err) => {
-          console.error('Tail WebSocket error callback:', err);
+          console.error(`Tail WebSocket error callback for ${sub.key}:`, err);
         },
-        tailOrigin
+        sub.origin
       );
-    } else {
-      disconnectTail();
     }
 
+    // On unmount or when isTailing flips off we close every channel.
     return () => {
       disconnectTail();
     };
-  }, [isTailing, activeTailFilename, parsers, rules, annotations, desktopAlertsEnabled, webhookEnabled, dispatchWebhookAlert, tailOrigin]);
+  }, [isTailing, selectedFiles.join('|'), parsers, rules, annotations, desktopAlertsEnabled, webhookEnabled, dispatchWebhookAlert]);
 
   // Effect to merge pausedLogs when resuming tailing
   useEffect(() => {
@@ -1146,7 +1160,8 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
         isPayloadsOnly: filters.isPayloadsOnly,
         dateFrom: filters.dateFrom ? (filters.dateFrom instanceof Date ? filters.dateFrom.toISOString() : String(filters.dateFrom)) : null,
         dateTo: filters.dateTo ? (filters.dateTo instanceof Date ? filters.dateTo.toISOString() : String(filters.dateTo)) : null,
-        quickFilter: filters.quickFilter
+        quickFilter: filters.quickFilter,
+        endpointFilter: filters.endpointFilter || null,
       },
       createdAt: new Date().toISOString()
     };
@@ -1177,7 +1192,8 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
       dateFrom: parsePresetDate(preset.filters.dateFrom),
       dateTo: parsePresetDate(preset.filters.dateTo),
       correlationId: null,
-      quickFilter: preset.filters.quickFilter
+      quickFilter: preset.filters.quickFilter,
+      endpointFilter: (preset.filters as any).endpointFilter ?? null,
     });
     setCurrentPage(1);
   }, []);

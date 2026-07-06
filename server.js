@@ -161,7 +161,8 @@ function getSshConnections() {
     return connections.map(conn => ({
       ...conn,
       password: conn.password ? decrypt(conn.password) : '',
-      privateKeyContent: conn.privateKeyContent ? decrypt(conn.privateKeyContent) : ''
+      privateKeyContent: conn.privateKeyContent ? decrypt(conn.privateKeyContent) : '',
+      sudoPassword: conn.sudoPassword ? decrypt(conn.sudoPassword) : ''
     }));
   } catch (err) {
     console.error('Error reading SSH connections file:', err);
@@ -174,7 +175,8 @@ function saveSshConnections(connections) {
     const encryptedConnections = connections.map(conn => ({
       ...conn,
       password: conn.password ? encrypt(conn.password) : '',
-      privateKeyContent: conn.privateKeyContent ? encrypt(conn.privateKeyContent) : ''
+      privateKeyContent: conn.privateKeyContent ? encrypt(conn.privateKeyContent) : '',
+      sudoPassword: conn.sudoPassword ? encrypt(conn.sudoPassword) : ''
     }));
     fs.writeFileSync(SSH_CONFIG_PATH, JSON.stringify(encryptedConnections, null, 2), 'utf8');
   } catch (err) {
@@ -248,6 +250,115 @@ async function getSshFiles(config) {
     });
   });
 }
+
+/**
+ * Runs `chmod 777 <remoteFilePath>` on a remote SSH server using an exec channel.
+ * If the configured SSH user is not the file owner, escalates via `sudo -S` and
+ * pipes the saved sudo password through stdin.
+ * Resolves { ok: boolean, mode: 'plain'|'sudo', stderr?: string }. Never throws.
+ */
+function fixRemotePermissions(config, remoteFilePath, opts = {}) {
+  const sudoPass = opts.sudoPassword || config.sudoPassword;
+  return new Promise((resolve) => {
+    const conn = new Client();
+    let settled = false;
+    const done = (result) => { if (!settled) { settled = true; resolve(result); } };
+
+    const escaped = remoteFilePath.replace(/'/g, "'\\''");
+
+    conn.on('ready', () => {
+      // First try plain chmod (works if user already owns/can write the file).
+      conn.exec(`chmod 777 '${escaped}'; echo "__CHMOD_EXIT__:$?"`, (err, stream) => {
+        if (err) { conn.end(); return done({ ok: false, mode: 'plain', stderr: err.message }); }
+
+        let stdout = '';
+        let stderr = '';
+        stream.on('close', () => { /* noop, handled per-data */ });
+        stream.on('data', (d) => { stdout += d.toString(); });
+        stream.stderr.on('data', (d) => { stderr += d.toString(); });
+        stream.on('close', () => {
+          // ssh2 exec emits 'close' twice (after exit and after channel close). We attach
+          // our logic to the actual 'exit' event below instead.
+        });
+
+        stream.on('exit', async (code) => {
+          const match = /__CHMOD_EXIT__:(\d+)/.exec(stdout);
+          const exitCode = match ? parseInt(match[1], 10) : code;
+          if (exitCode === 0) {
+            conn.end();
+            console.log(`[fix-perm] chmod 777 OK on ${config.name} -> ${remoteFilePath}`);
+            return done({ ok: true, mode: 'plain' });
+          }
+
+          // Plain chmod failed. Try sudo if we have a password saved.
+          if (!sudoPass) {
+            conn.end();
+            console.warn(`[fix-perm] chmod denied on ${config.name} (no sudo password configured)`);
+            return done({ ok: false, mode: 'plain', stderr: stderr.trim() || 'chmod denied (no sudo configured)' });
+          }
+
+          console.log(`[fix-perm] chmod denied on ${config.name}, escalating with sudo...`);
+          conn.exec(`sudo -S chmod 777 '${escaped}'; echo "__SUDO_EXIT__:$?"`, (sudoErr, sudoStream) => {
+            if (sudoErr) { conn.end(); return done({ ok: false, mode: 'sudo', stderr: sudoErr.message }); }
+
+            let sudoStdout = '';
+            let sudoStderr = '';
+            sudoStream.on('data', (d) => { sudoStdout += d.toString(); });
+            sudoStream.stderr.on('data', (d) => { sudoStderr += d.toString(); });
+            // Push the password as soon as the channel is up; sudo reads from stdin.
+            sudoStream.write(sudoPass + '\n');
+
+            sudoStream.on('exit', (sudoCode) => {
+              const m = /__SUDO_EXIT__:(\d+)/.exec(sudoStdout);
+              const sCode = m ? parseInt(m[1], 10) : sudoCode;
+              conn.end();
+              if (sCode === 0) {
+                console.log(`[fix-perm] sudo chmod 777 OK on ${config.name} -> ${remoteFilePath}`);
+                return done({ ok: true, mode: 'sudo' });
+              }
+              console.warn(`[fix-perm] sudo chmod failed on ${config.name} (exit ${sCode}): ${sudoStderr.trim()}`);
+              done({ ok: false, mode: 'sudo', stderr: sudoStderr.trim() || `sudo exit ${sCode}` });
+            });
+          });
+        });
+      });
+    }).on('error', (err) => {
+      console.warn(`[fix-perm] SSH error on ${config.name}: ${err.message}`);
+      done({ ok: false, mode: 'plain', stderr: err.message });
+    }).connect({
+      host: config.host,
+      port: parseInt(config.port, 10) || 22,
+      username: config.username,
+      password: config.password || undefined,
+      privateKey: config.privateKeyContent ? config.privateKeyContent : (config.privateKeyPath ? fs.readFileSync(config.privateKeyPath) : undefined),
+      readyTimeout: 10000
+    });
+  });
+}
+
+/**
+ * POST /api/ssh-fix-perm
+ * Body: { filename, origin }
+ * Runs chmod 777 on the remote file (with sudo fallback if a sudo password is saved
+ * for the connection). Returns the result so the UI can show a toast.
+ */
+app.post('/api/ssh-fix-perm', express.json(), async (req, res) => {
+  const { filename, origin } = req.body || {};
+  if (!filename || !origin || origin === 'local') {
+    return res.status(400).json({ ok: false, error: 'filename and a non-local origin are required' });
+  }
+
+  const connections = getSshConnections();
+  const config = connections.find(c => c.id === origin);
+  if (!config) return res.status(404).json({ ok: false, error: 'SSH connection not found' });
+
+  const remoteFilePath = (config.logDir && config.logDir !== '.')
+    ? `${config.logDir.replace(/\/+$/, '')}/${filename}`
+    : filename;
+
+  const result = await fixRemotePermissions(config, remoteFilePath);
+  res.json({ ...result, remoteFilePath, host: config.name });
+});
 
 // Serve static assets from public/ folder
 app.use(express.static(path.join(__dirname, 'public')));
@@ -346,47 +457,74 @@ app.get('/api/files/:filename', async (req, res) => {
       return res.status(404).json({ error: 'SSH Connection configuration not found' });
     }
 
-    const conn = new Client();
-    conn.on('ready', () => {
-      conn.sftp((err, sftp) => {
-        if (err) {
-          conn.end();
-          console.error(`SFTP error on ${config.name} during file read:`, err);
-          return res.status(500).json({ error: 'Failed to establish SFTP session' });
-        }
-        
-        const remoteFilePath = (config.logDir && config.logDir !== '.') ? `${config.logDir}/${filename}` : filename;
-        
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        const stream = sftp.createReadStream(remoteFilePath, { encoding: 'utf8' });
-        
-        stream.on('error', (streamErr) => {
-          conn.end();
-          console.error(`SFTP ReadStream error for file ${filename} on ${config.name}:`, streamErr);
-          if (!res.headersSent) {
-            res.status(404).json({ error: 'Remote file not found or unreadable' });
+    const remoteFilePath = (config.logDir && config.logDir !== '.') ? `${config.logDir}/${filename}` : filename;
+    let permFixAttempted = false;
+
+    const openReadStream = () => {
+      const conn = new Client();
+      conn.on('ready', () => {
+        conn.sftp((err, sftp) => {
+          if (err) {
+            conn.end();
+            console.error(`SFTP error on ${config.name} during file read:`, err);
+            if (!res.headersSent) {
+              return res.status(500).json({ error: 'Failed to establish SFTP session' });
+            }
+            return;
           }
-        });
 
-        stream.on('close', () => {
-          conn.end();
-        });
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          const stream = sftp.createReadStream(remoteFilePath, { encoding: 'utf8' });
 
-        stream.pipe(res);
+          stream.on('error', async (streamErr) => {
+            conn.end();
+            console.error(`SFTP ReadStream error for file ${filename} on ${config.name}:`, streamErr);
+
+            // SFTP error code 3 == PERMISSION_DENIED. Try to chmod 777 once and retry.
+            const isPerm = streamErr && (streamErr.code === 3 || /Permission denied/i.test(streamErr.message || ''));
+            if (isPerm && !permFixAttempted) {
+              permFixAttempted = true;
+              console.log(`[fix-perm] Permission denied on ${config.name}:${remoteFilePath}, attempting chmod 777...`);
+              const fixResult = await fixRemotePermissions(config, remoteFilePath);
+              if (fixResult.ok && !res.headersSent) {
+                return openReadStream();
+              }
+            }
+
+            if (!res.headersSent) {
+              let msg;
+              if (isPerm) {
+                msg = config.sudoPassword
+                  ? `Permission denied on ${config.name}:${remoteFilePath}. Auto sudo chmod failed - open the file in the explorer and click "Fix permissions" to retry.`
+                  : `Permission denied on ${config.name}:${remoteFilePath}. Configure a sudo password for this server, or run 'sudo chmod 777 ${remoteFilePath}' manually.`;
+              } else if (streamErr && streamErr.code === 2) {
+                msg = `Remote file not found: ${remoteFilePath}`;
+              } else {
+                msg = 'Remote file not found or unreadable';
+              }
+              res.status(404).json({ error: msg, permDenied: !!isPerm, hasSudo: !!config.sudoPassword });
+            }
+          });
+
+          stream.on('close', () => { conn.end(); });
+          stream.pipe(res);
+        });
+      }).on('error', (err) => {
+        console.error(`SSH connection error for file ${filename} on ${config.name}:`, err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: `Connection failed: ${err.message}` });
+        }
+      }).connect({
+        host: config.host,
+        port: parseInt(config.port, 10) || 22,
+        username: config.username,
+        password: config.password || undefined,
+        privateKey: config.privateKeyContent ? config.privateKeyContent : (config.privateKeyPath ? fs.readFileSync(config.privateKeyPath) : undefined),
+        readyTimeout: 10000
       });
-    }).on('error', (err) => {
-      console.error(`SSH connection error for file ${filename} on ${config.name}:`, err);
-      if (!res.headersSent) {
-        res.status(500).json({ error: `Connection failed: ${err.message}` });
-      }
-    }).connect({
-      host: config.host,
-      port: parseInt(config.port, 10) || 22,
-      username: config.username,
-      password: config.password || undefined,
-      privateKey: config.privateKeyContent ? config.privateKeyContent : (config.privateKeyPath ? fs.readFileSync(config.privateKeyPath) : undefined),
-      readyTimeout: 10000
-    });
+    };
+
+    openReadStream();
   }
 });
 
@@ -435,6 +573,7 @@ app.get('/api/ssh-connections', (req, res) => {
     logDir: conn.logDir,
     hasPassword: !!conn.password,
     hasPrivateKey: !!conn.privateKeyContent || !!conn.privateKeyPath,
+    hasSudoPassword: !!conn.sudoPassword,
     privateKeyPath: conn.privateKeyPath
   }));
   res.json(safeConnections);
@@ -445,7 +584,7 @@ app.get('/api/ssh-connections', (req, res) => {
  * Adds or updates an SSH connection.
  */
 app.post('/api/ssh-connections', express.json(), (req, res) => {
-  const { id, name, host, port, username, authType, password, privateKeyContent, privateKeyPath, logDir } = req.body;
+  const { id, name, host, port, username, authType, password, privateKeyContent, privateKeyPath, logDir, sudoPassword } = req.body;
   
   if (!name || !host || !username) {
     return res.status(400).json({ error: 'Name, Host, and Username are required' });
@@ -466,12 +605,14 @@ app.post('/api/ssh-connections', express.json(), (req, res) => {
 
   if (password !== undefined) connectionData.password = password;
   if (privateKeyContent !== undefined) connectionData.privateKeyContent = privateKeyContent;
+  if (sudoPassword !== undefined) connectionData.sudoPassword = sudoPassword;
 
   const existingIndex = connections.findIndex(c => c.id === connectionData.id);
   if (existingIndex > -1) {
     const existing = connections[existingIndex];
     if (password === undefined) connectionData.password = existing.password;
     if (privateKeyContent === undefined) connectionData.privateKeyContent = existing.privateKeyContent;
+    if (sudoPassword === undefined) connectionData.sudoPassword = existing.sudoPassword;
     connections[existingIndex] = connectionData;
   } else {
     connections.push(connectionData);

@@ -129,7 +129,12 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
     if (filters.activeService && filters.activeService !== 'ALL') {
       count++;
     }
-    
+
+    // 2b. Endpoint filter active
+    if (filters.endpointFilter && filters.endpointFilter.trim()) {
+      count++;
+    }
+
     // 3. Date range limits set
     if (filters.dateFrom || filters.dateTo) {
       count++;
@@ -451,6 +456,63 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
                 icon="dns"
               />
 
+              <div
+                title="Buscar por código de endpoint (ej: 1015). Aplica sobre el campo Endpoint extraído del log."
+                style={{
+                  position: 'relative',
+                  display: 'flex',
+                  alignItems: 'center',
+                  background: 'var(--bg-input)',
+                  border: '1px solid ' + (filters.endpointFilter ? 'var(--accent-solid)' : 'var(--border-color)'),
+                  borderRadius: '6px',
+                  padding: '0 8px 0 26px',
+                  height: '32px',
+                  minWidth: '160px'
+                }}
+              >
+                <span
+                  className="material-icons-round"
+                  style={{
+                    position: 'absolute', left: '6px', top: '50%', transform: 'translateY(-50%)',
+                    fontSize: '14px', color: 'var(--text-muted)', pointerEvents: 'none'
+                  }}
+                >
+                  api
+                </span>
+                <input
+                  type="text"
+                  aria-label="Buscar por endpoint"
+                  placeholder="EP endpoint (ej: 1015)"
+                  value={filters.endpointFilter || ''}
+                  onChange={e => {
+                    setFilters(p => ({ ...p, endpointFilter: e.target.value || null }));
+                    setCurrentPage(1);
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    outline: 'none',
+                    color: 'var(--text-primary)',
+                    fontSize: '12px',
+                    width: '100%',
+                    minWidth: '120px'
+                  }}
+                />
+                {filters.endpointFilter && (
+                  <button
+                    className="icon-button"
+                    title="Limpiar filtro de endpoint"
+                    onClick={() => {
+                      setFilters(p => ({ ...p, endpointFilter: null }));
+                      setCurrentPage(1);
+                    }}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, marginLeft: '4px' }}
+                  >
+                    <span className="material-icons-round" style={{ fontSize: '14px' }}>close</span>
+                  </button>
+                )}
+              </div>
+
               <DateRangePicker
                 filters={filters}
                 setFilters={setFilters}
@@ -475,11 +537,12 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
                     activeLevels: defaultLevels(), 
                     activeService: 'ALL', 
                     searchTerm: '', 
-                    isRegexSearch: false, 
-                    isPayloadsOnly: false, 
-                    dateFrom: null, 
-                    dateTo: null, 
-                    correlationId: null 
+                    isRegexSearch: false,
+                    isPayloadsOnly: false,
+                    dateFrom: null,
+                    dateTo: null,
+                    correlationId: null,
+                    endpointFilter: null
                   }); 
                   setSortColumn(null); 
                   setSortDirection('asc'); 

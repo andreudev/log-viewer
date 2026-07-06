@@ -163,6 +163,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [sshPassword, setSshPassword] = useState('');
   const [sshPrivateKey, setSshPrivateKey] = useState('');
   const [sshLogDir, setSshLogDir] = useState('.');
+  const [sshSudoPassword, setSshSudoPassword] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showSshForm, setShowSshForm] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -181,6 +182,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setSshPassword('');
     setSshPrivateKey('');
     setSshLogDir('.');
+    setSshSudoPassword('');
     setTestResult(null);
     setTestError(null);
     setShowSshForm(false);
@@ -196,6 +198,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setSshPassword('');
     setSshPrivateKey('');
     setSshLogDir(conn.logDir || '.');
+    setSshSudoPassword('');
     setTestResult(null);
     setTestError(null);
     setShowSshForm(true);
@@ -215,7 +218,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         authType: sshAuthType,
         password: sshAuthType === 'password' ? sshPassword : '',
         privateKeyContent: sshAuthType === 'key' ? sshPrivateKey : '',
-        logDir: sshLogDir
+        logDir: sshLogDir,
+        sudoPassword: sshSudoPassword
       });
       setTestResult(msg);
     } catch (err: any) {
@@ -237,7 +241,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         authType: sshAuthType,
         password: sshAuthType === 'password' ? sshPassword : '',
         privateKeyContent: sshAuthType === 'key' ? sshPrivateKey : '',
-        logDir: sshLogDir
+        logDir: sshLogDir,
+        sudoPassword: sshSudoPassword
       });
       resetSshForm();
     } catch (err: any) {
@@ -773,6 +778,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         />
                       </div>
                     )}
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        CONTRASEÑA DE SUDO (OPCIONAL)
+                        <span
+                          title="Se usa para ejecutar 'sudo chmod 777' automaticamente cuando un archivo del servidor pierde permisos de lectura. Queda encriptada igual que la contraseña SSH."
+                          style={{ cursor: 'help', color: 'var(--text-muted)', display: 'inline-flex' }}
+                        >
+                          <span className="material-icons-round" style={{ fontSize: '13px' }}>info</span>
+                        </span>
+                      </span>
+                      <input
+                        type="password"
+                        placeholder={sshAuthType === 'key' ? 'tjmtHrhfy' : 'Ingresa la contraseña de sudo para auto-fix de permisos'}
+                        value={sshSudoPassword}
+                        onChange={e => setSshSudoPassword(e.target.value)}
+                        style={{
+                          background: 'var(--bg-input)',
+                          border: '1px solid var(--border-color)',
+                          color: 'var(--text-primary)',
+                          borderRadius: '6px',
+                          padding: '8px 12px',
+                          fontSize: '13px',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
 
                     {testResult && (
                       <div style={{ padding: '8px 12px', background: 'rgba(152,195,121,0.1)', border: '1px solid rgba(152,195,121,0.2)', borderRadius: '6px', color: '#98c379', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>

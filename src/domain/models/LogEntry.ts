@@ -14,5 +14,10 @@ export interface LogEntry {
   originFile?: string;
   customBadge?: string;
   annotation?: string;
+  /**
+   * Numeric endpoint code (e.g. "1015") extracted from logs that include
+   * `[ Endpoint: 1015 ]`. Used for fast filtering and traceability.
+   */
+  endpoint?: string;
 }
 

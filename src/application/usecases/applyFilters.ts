@@ -11,6 +11,11 @@ export interface FilterState {
   dateTo: Date | null;
   correlationId: string | null;
   quickFilter?: 'NONE' | 'LATENCY' | 'INTEGRATION_ERRORS' | 'SOAP_TRAFFIC' | 'REQUESTS' | 'RESPONSES';
+  /**
+   * Numeric endpoint code to filter by (e.g. "1015"). When set, only logs
+   * whose `endpoint` or `service` contains this value are kept.
+   */
+  endpointFilter?: string | null;
 }
 
 export type SortColumn = 'timestamp' | 'level' | 'service' | 'correlationId' | 'message' | null;
@@ -29,6 +34,16 @@ export function applyFilters(
 
   if (filters.activeService !== 'ALL') {
     filtered = filtered.filter(log => log.service === filters.activeService);
+  }
+
+  if (filters.endpointFilter && filters.endpointFilter.trim()) {
+    const needle = filters.endpointFilter.trim().toLowerCase();
+    filtered = filtered.filter(log => {
+      if (log.endpoint && log.endpoint.toLowerCase() === needle) return true;
+      if (log.service && log.service.toLowerCase().includes(needle)) return true;
+      // Last fallback: scan the raw line for "[ Endpoint: <code> ]"
+      return (log.raw || '').toLowerCase().includes(`endpoint: ${needle}`);
+    });
   }
 
   if (filters.correlationId) {

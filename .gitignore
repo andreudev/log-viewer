@@ -28,3 +28,13 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Secrets / local config
+master.key
+*.key
+conn-*.json
+ssh_connections.json
+fix-perm-*.json
+system_settings.json
+files-list.json
+test-result.txt

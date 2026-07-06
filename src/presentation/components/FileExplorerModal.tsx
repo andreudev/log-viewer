@@ -1,5 +1,5 @@
-import React from 'react';
-import { LogFileMeta } from '../../infrastructure/api/filesApi';
+import React, { useState } from 'react';
+import { LogFileMeta, fixRemoteFilePermissions } from '../../infrastructure/api/filesApi';
 
 interface FileExplorerModalProps {
   isOpen: boolean;
@@ -27,6 +27,34 @@ export const FileExplorerModal: React.FC<FileExplorerModalProps> = ({
   handleRefresh
 }) => {
   if (!isOpen) return null;
+
+  const [fixingKey, setFixingKey] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const showToast = (type: 'success' | 'error', text: string) => {
+    setToast({ type, text });
+    setTimeout(() => setToast(null), 4500);
+  };
+
+  const handleFixPerm = async (file: LogFileMeta, ev: React.MouseEvent) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    if (!file.origin || file.origin === 'local') return;
+    const fileKey = `${file.origin}::${file.name}`;
+    setFixingKey(fileKey);
+    try {
+      const result = await fixRemoteFilePermissions(file.name, file.origin);
+      if (result.ok) {
+        showToast('success', `Permisos 777 aplicados a ${file.name} en ${result.host || ''} (${result.mode})`);
+      } else {
+        showToast('error', `No se pudo: ${result.stderr || 'verifica la password de sudo en Settings'}`);
+      }
+    } catch (err: any) {
+      showToast('error', err.message || 'Error al intentar fix-perm');
+    } finally {
+      setFixingKey(null);
+    }
+  };
 
   const allFiles = [...files];
   Object.keys(uploadedFiles).forEach(name => {
@@ -203,17 +231,44 @@ export const FileExplorerModal: React.FC<FileExplorerModalProps> = ({
                             {(file.sizeBytes / 1024).toFixed(1)} KB
                           </span>
                           {file.originName && (
-                            <span style={{ 
-                              background: file.origin === 'local' ? 'rgba(255,255,255,0.06)' : 'var(--accent-bg)', 
-                              color: file.origin === 'local' ? 'var(--text-muted)' : 'var(--accent-solid)', 
-                              fontSize: '8px', 
-                              padding: '1px 5px', 
+                            <span style={{
+                              background: file.origin === 'local' ? 'rgba(255,255,255,0.06)' : 'var(--accent-bg)',
+                              color: file.origin === 'local' ? 'var(--text-muted)' : 'var(--accent-solid)',
+                              fontSize: '8px',
+                              padding: '1px 5px',
                               borderRadius: '3px',
                               fontWeight: 'bold',
                               textTransform: 'uppercase'
                             }}>
                               {file.originName}
                             </span>
+                          )}
+                          {file.origin && file.origin !== 'local' && (
+                            <button
+                              onClick={(e) => handleFixPerm(file, e)}
+                              disabled={fixingKey === fileKey}
+                              title="Restaurar permisos (chmod 777) en el servidor remoto via sudo"
+                              style={{
+                                background: 'rgba(229,192,123,0.08)',
+                                border: '1px solid rgba(229,192,123,0.25)',
+                                color: '#e5c07b',
+                                fontSize: '9px',
+                                padding: '2px 6px',
+                                borderRadius: '3px',
+                                cursor: fixingKey === fileKey ? 'wait' : 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                                fontWeight: 600,
+                                opacity: fixingKey === fileKey ? 0.6 : 1,
+                                transition: 'all 0.15s'
+                              }}
+                            >
+                              <span className="material-icons-round" style={{ fontSize: '11px' }}>
+                                {fixingKey === fileKey ? 'hourglass_top' : 'build'}
+                              </span>
+                              <span>{fixingKey === fileKey ? '...' : 'Fix perms'}</span>
+                            </button>
                           )}
                         </div>
                       </button>
@@ -299,8 +354,8 @@ export const FileExplorerModal: React.FC<FileExplorerModalProps> = ({
           <button className="secondary-button" onClick={onClose} style={{ padding: '8px 16px' }}>
             Cerrar
           </button>
-          <button 
-            className="primary-button" 
+          <button
+            className="primary-button"
             onClick={onClose}
             style={{ padding: '8px 20px' }}
           >
@@ -308,6 +363,34 @@ export const FileExplorerModal: React.FC<FileExplorerModalProps> = ({
           </button>
         </div>
       </div>
+
+      {toast && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            padding: '10px 18px',
+            background: toast.type === 'success' ? 'rgba(152,195,121,0.95)' : 'rgba(224,108,117,0.95)',
+            color: '#1a1a1a',
+            borderRadius: '8px',
+            fontSize: '13px',
+            fontWeight: 600,
+            boxShadow: '0 6px 20px rgba(0,0,0,0.4)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            maxWidth: '80vw'
+          }}
+        >
+          <span className="material-icons-round" style={{ fontSize: '18px' }}>
+            {toast.type === 'success' ? 'check_circle' : 'error'}
+          </span>
+          <span>{toast.text}</span>
+        </div>
+      )}
     </div>
   );
 };

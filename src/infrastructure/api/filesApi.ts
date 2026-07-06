@@ -110,3 +110,24 @@ export async function executeGlobalSearch(query: string, isRegex: boolean): Prom
   return data.results || [];
 }
 
+export interface FixPermResult {
+  ok: boolean;
+  mode: 'plain' | 'sudo';
+  stderr?: string;
+  remoteFilePath?: string;
+  host?: string;
+}
+
+export async function fixRemoteFilePermissions(filename: string, origin: string): Promise<FixPermResult> {
+  const response = await fetch('/api/ssh-fix-perm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename, origin })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok && !data.ok) {
+    throw new Error(data.error || data.stderr || 'fix-perm failed');
+  }
+  return data;
+}
+

@@ -1,129 +1,149 @@
-interface GlobalTailSocketState {
+// Multiplexed WebSocket tail: allows watching multiple (filename, origin) pairs
+// simultaneously. Each pair owns its own WebSocket, callbacks and reconnect timer.
+
+type LineCallback = (line: string) => void;
+type ErrorCallback = (err: Event) => void;
+
+interface TailChannel {
+  key: string;            // `${origin}::${filename}`
+  filename: string;
+  origin: string;
   ws: WebSocket | null;
   reconnectTimeout: any;
-  currentFilename: string | null;
-  onLineCallback: ((line: string) => void) | null;
-  onErrorCallback: ((err: Event) => void) | null;
-  shouldReconnect: boolean;
+  onLine: LineCallback;
+  onError: ErrorCallback | null;
+  closed: boolean;        // true once disconnect() is called - prevents reconnect
 }
 
-const g = typeof window !== 'undefined' ? (window as any) : {} as any;
+const g = (typeof window !== 'undefined' ? (window as any) : {}) as any;
 
-if (typeof window !== 'undefined' && !g.__globalTailSocket__) {
-  g.__globalTailSocket__ = {
-    ws: null,
-    reconnectTimeout: null,
-    currentFilename: null,
-    onLineCallback: null,
-    onErrorCallback: null,
-    shouldReconnect: true
+if (typeof window !== 'undefined' && !g.__globalTailChannels__) {
+  g.__globalTailChannels__ = new Map<string, TailChannel>();
+}
+
+const channels: Map<string, TailChannel> = typeof window !== 'undefined'
+  ? g.__globalTailChannels__
+  : new Map<string, TailChannel>();
+
+function makeKey(filename: string, origin: string): string {
+  return `${origin}::${filename}`;
+}
+
+function startChannel(channel: TailChannel): void {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = window.location.host || 'localhost:3000';
+  const url = `${protocol}//${host}/ws/tail?filename=${encodeURIComponent(channel.filename)}&origin=${encodeURIComponent(channel.origin)}`;
+
+  console.log(`[WS-Client] Opening tail channel ${channel.key} -> ${url}`);
+  channel.ws = new WebSocket(url);
+
+  channel.ws.onopen = () => {
+    console.log(`[WS-Client] Tail channel ${channel.key} connected`);
+  };
+
+  channel.ws.onmessage = (event) => {
+    try {
+      const message = JSON.parse(event.data);
+      if (message.type === 'line') {
+        channel.onLine(message.data);
+      } else if (message.type === 'status') {
+        console.log(`[WS-Client] Tail ${channel.key} status:`, message);
+      }
+    } catch (err) {
+      console.error(`[WS-Client] Tail ${channel.key} parse error:`, err);
+    }
+  };
+
+  channel.ws.onerror = (event) => {
+    console.error(`[WS-Client] Tail ${channel.key} error:`, event);
+    if (channel.onError) channel.onError(event);
+  };
+
+  channel.ws.onclose = (event) => {
+    console.log(`[WS-Client] Tail ${channel.key} closed (${event.code})`);
+    channel.ws = null;
+    if (!channel.closed) {
+      channel.reconnectTimeout = setTimeout(() => startChannel(channel), 3000);
+    }
   };
 }
 
-const state: GlobalTailSocketState = typeof window !== 'undefined'
-  ? g.__globalTailSocket__
-  : {
-      ws: null,
-      reconnectTimeout: null,
-      currentFilename: null,
-      onLineCallback: null,
-      onErrorCallback: null,
-      shouldReconnect: true
-    };
-
 /**
- * Establishes a WebSocket connection to tail log files in real-time.
- * 
- * @param filename Name of the log file in the logs directory.
- * @param onLineReceived Callback executed when a new line is received from the server.
- * @param onError Callback executed when a connection error occurs.
- * @param origin Source of the file ('local' or SSH connection ID).
+ * Subscribe to a tail stream for (filename, origin). Multiple subscriptions
+ * with different keys can run simultaneously. Calling again with the same key
+ * just replaces the line callback.
  */
 export function connectTail(
   filename: string,
-  onLineReceived: (line: string) => void,
-  onError: (err: Event) => void,
+  onLineReceived: LineCallback,
+  onError: ErrorCallback,
   origin = 'local'
 ) {
-  // Tear down any existing connection
-  disconnectTail();
+  const key = makeKey(filename, origin);
+  const existing = channels.get(key);
 
-  state.currentFilename = filename;
-  state.onLineCallback = onLineReceived;
-  state.onErrorCallback = onError;
-  state.shouldReconnect = true;
-
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = window.location.host || 'localhost:3000';
-  const url = `${protocol}//${host}/ws/tail?filename=${encodeURIComponent(filename)}&origin=${encodeURIComponent(origin)}`;
-
-  function establishConnection() {
-    if (!state.shouldReconnect) return;
-
-    console.log(`[WS-Client] Establishing WebSocket connection to: ${url}`);
-    state.ws = new WebSocket(url);
-
-    state.ws.onopen = () => {
-      console.log(`[WS-Client] WebSocket connected for tailing: ${filename}`);
-    };
-
-    state.ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        if (message.type === 'line' && state.onLineCallback) {
-          state.onLineCallback(message.data);
-        } else if (message.type === 'status') {
-          console.log('[WS-Client] WebSocket status:', message);
-        }
-      } catch (err) {
-        console.error('[WS-Client] Error parsing WebSocket message data:', err);
-      }
-    };
-
-    state.ws.onerror = (event) => {
-      console.error('[WS-Client] WebSocket error occurred:', event);
-      if (state.onErrorCallback) {
-        state.onErrorCallback(event);
-      }
-    };
-
-    state.ws.onclose = (event) => {
-      console.log(`[WS-Client] WebSocket closed. Code: ${event.code}, Reason: ${event.reason || 'No reason'}`);
-      state.ws = null;
-
-      // Reconnect automatically after 3 seconds if not intentionally closed
-      if (state.shouldReconnect) {
-        console.log('[WS-Client] Unexpected connection close. Retrying in 3 seconds...');
-        state.reconnectTimeout = setTimeout(() => {
-          establishConnection();
-        }, 3000);
-      }
-    };
+  if (existing) {
+    // Same channel - just refresh callbacks. Do not tear down the WS.
+    existing.onLine = onLineReceived;
+    existing.onError = onError;
+    existing.closed = false;
+    console.log(`[WS-Client] Reusing tail channel ${key}`);
+    return;
   }
 
-  establishConnection();
+  const channel: TailChannel = {
+    key,
+    filename,
+    origin,
+    ws: null,
+    reconnectTimeout: null,
+    onLine: onLineReceived,
+    onError,
+    closed: false,
+  };
+
+  channels.set(key, channel);
+  startChannel(channel);
 }
 
 /**
- * Disconnects the active WebSocket tail connection and clears any retry timers.
+ * Disconnect a specific (filename, origin) channel. If called with no args,
+ * disconnects every active channel (used when the user toggles tail off).
  */
-export function disconnectTail() {
-  state.shouldReconnect = false;
-
-  if (state.reconnectTimeout) {
-    clearTimeout(state.reconnectTimeout);
-    state.reconnectTimeout = null;
+export function disconnectTail(filename?: string, origin?: string) {
+  if (filename === undefined) {
+    // Disconnect everything
+    for (const ch of Array.from(channels.values())) {
+      tearDownChannel(ch);
+    }
+    channels.clear();
+    console.log('[WS-Client] All tail channels disconnected');
+    return;
   }
 
-  if (state.ws) {
-    // Standard normal closure code
-    console.log('[WS-Client] Closing active WebSocket tail connection.');
-    state.ws.close(1000, 'Tailing stopped by client');
-    state.ws = null;
+  const key = makeKey(filename, origin || 'local');
+  const ch = channels.get(key);
+  if (ch) {
+    tearDownChannel(ch);
+    channels.delete(key);
   }
+}
 
-  state.currentFilename = null;
-  state.onLineCallback = null;
-  state.onErrorCallback = null;
-  console.log('[WS-Client] WebSocket tailing disconnected and cleaned up.');
+function tearDownChannel(ch: TailChannel) {
+  ch.closed = true;
+  if (ch.reconnectTimeout) {
+    clearTimeout(ch.reconnectTimeout);
+    ch.reconnectTimeout = null;
+  }
+  if (ch.ws) {
+    try { ch.ws.close(1000, 'Tailing stopped by client'); } catch (_) { /* noop */ }
+    ch.ws = null;
+  }
+}
+
+/**
+ * Returns the list of currently active tail keys (origin::filename).
+ */
+export function activeTailKeys(): string[] {
+  return Array.from(channels.keys());
 }

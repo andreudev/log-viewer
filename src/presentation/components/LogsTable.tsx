@@ -367,7 +367,30 @@ export const LogsTable: React.FC<LogsTableProps> = ({
                     </span>
                   </div>
                 </td>
-                <td><div className="badge badge-service" title={log.service || '-'}>{log.service || '-'}</div></td>
+                <td>
+                  {log.endpoint ? (
+                    <button
+                      className="badge badge-service endpoint-filter-btn"
+                      title={`Filtrar por endpoint ${log.endpoint}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFilters((p: any) => ({ ...p, endpointFilter: log.endpoint }));
+                        setCurrentPage(1);
+                      }}
+                      style={{
+                        cursor: 'pointer',
+                        border: '1px solid var(--accent-solid)',
+                        background: 'var(--accent-bg)',
+                        color: 'var(--accent-solid)',
+                        fontWeight: 600
+                      }}
+                    >
+                      {log.service || `EP ${log.endpoint}`}
+                    </button>
+                  ) : (
+                    <div className="badge badge-service" title={log.service || '-'}>{log.service || '-'}</div>
+                  )}
+                </td>
                 <td>
                   {(log.correlationId || '-') !== '-' ? (
                     <div className="correlation-cell">
@@ -545,14 +568,37 @@ export const LogsTable: React.FC<LogsTableProps> = ({
                           </span>
                         )}
                         <span 
-                          className="badge badge-outline" 
+                          className="badge badge-outline"
                           style={{ color: `hsl(${lc})`, borderColor: `hsla(${lc},0.4)`, background: `hsla(${lc},0.08)` }}
                         >
                           {log.level || 'INFO'}
                         </span>
                       </div>
                     </td>
-                    <td><div className="badge badge-service" title={log.service || '-'}>{log.service || '-'}</div></td>
+                    <td>
+                      {log.endpoint ? (
+                        <button
+                          className="badge badge-service endpoint-filter-btn"
+                          title={`Filtrar por endpoint ${log.endpoint}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setFilters((p: any) => ({ ...p, endpointFilter: log.endpoint }));
+                            setCurrentPage(1);
+                          }}
+                          style={{
+                            cursor: 'pointer',
+                            border: '1px solid var(--accent-solid)',
+                            background: 'var(--accent-bg)',
+                            color: 'var(--accent-solid)',
+                            fontWeight: 600
+                          }}
+                        >
+                          {log.service || `EP ${log.endpoint}`}
+                        </button>
+                      ) : (
+                        <div className="badge badge-service" title={log.service || '-'}>{log.service || '-'}</div>
+                      )}
+                    </td>
                     <td>
                       {(log.correlationId || '-') !== '-' ? (
                         <div className="correlation-cell">
