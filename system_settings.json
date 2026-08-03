@@ -1,8 +1,0 @@
-{
-  "localLogsDir": "/home/andreudev/Downloads/Logs capa media",
-  "aiEnabled": true,
-  "aiProvider": "nvidia",
-  "aiEndpoint": "https://integrate.api.nvidia.com/v1",
-  "aiModel": "meta/llama-3.3-70b-instruct",
-  "aiApiKey": "8f06da41d3e0d3334708f6dbec482313:b2bbc8f5c0da0f317a9aa770b36f22100f4d47c8d7f5ee817fe277aac40cd88b336e554228fffb44d3d0fc6df5c2ed268a53088f53e0d0f3674c111df140f3afcd9616ac5c10e0a0605103ad3d002256"
-}
