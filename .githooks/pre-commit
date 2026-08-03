@@ -31,12 +31,13 @@ FORBIDDEN_PATTERNS=(
   '\.p12$'
 )
 
-# Obtiene la lista de archivos staged (cualquier operacion: add, modify, rename).
-# No filtramos por --diff-filter para detectar tambien deletes de archivos sensibles.
-STAGED_FILES=$(git diff --cached --name-only)
+# Solo nos importan los staged para add/modify/rename/copy (NO deletes).
+# 'D' queda fuera intencionalmente: queremos permitir eliminar archivos
+# sensibles pre-existentes (cleanup del repo).
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMRT)
 
 if [ -z "$STAGED_FILES" ]; then
-  echo -e "${YELLOW}[pre-commit]${NC} No hay archivos staged; nada que verificar."
+  echo -e "${YELLOW}[pre-commit]${NC} No hay archivos staged para agregar/modificar; nada que verificar."
   exit 0
 fi
 
