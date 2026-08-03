@@ -13,6 +13,8 @@ Bienvenido al centro de documentación de **LogScope v5.0**. Aquí encontrarás 
 | [← Volver al README](../README.md) | Punto de entrada principal del proyecto (instalación rápida, requisitos). |
 | [⚙️ Getting Started](getting-started.md) | Instalación detallada, scripts de arranque y compilación. |
 | [🖥️ Scripts de Arranque](scripts.md) | Cómo usar `launch.ps1`, `start-all.ps1` y `stop-all.ps1` en Windows. |
+| [🌐 Workflow Remoto](WORKFLOW-REMOTO.md) | Cómo desarrollar desde una máquina local y bajar cambios al trabajo vía Git. |
+| [🧪 Testing Locales](testing-locales.md) | Cómo probar la UI con logs sintéticos sin copiar archivos reales. |
 
 ### 📖 Guías de Uso
 

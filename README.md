@@ -148,6 +148,21 @@ npm start         # node server.js (solo backend)
 
 ---
 
+## 🛠️ Desarrollo Remoto y Testing
+
+Si vas a desarrollar desde una máquina distinta a donde corre LogScope en producción, revisa:
+
+- [🌐 Workflow Remoto](docs/WORKFLOW-REMOTO.md) — branching, push/pull, sincronización entre máquinas, rollback
+- [🧪 Testing Locales](docs/testing-locales.md) — generador de logs sintéticos (`tools/gen-fake-logs.js`) para probar sin archivos reales
+
+El proyecto incluye un **pre-commit hook** en `.githooks/` que bloquea automáticamente cualquier intento de subir secretos (SSH passwords, API keys, certificados). Actívalo con:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+---
+
 ## 🤝 Contribuciones
 
 Por ahora es un proyecto interno. Si encuentras un bug o quieres proponer una mejora, abre un issue describiendo:
