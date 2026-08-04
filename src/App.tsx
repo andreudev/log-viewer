@@ -100,24 +100,18 @@ export function App() {
         {/* Filters and Tab Navigation bar */}
         {state.parsedLogs.length > 0 && state.activeTab === 'feed' && (
           <ErrorBoundary fallbackTitle="Error en el panel de filtros">
-            <FiltersPanel 
+            <FiltersPanel
               filters={state.filters}
               setFilters={state.setFilters}
               resetFilters={state.resetFilters}
               setCurrentPage={state.setCurrentPage}
               uniqueServices={state.uniqueServices}
-              handleLevelClick={state.handleLevelClick}
               setSortColumn={state.setSortColumn}
               setSortDirection={state.setSortDirection}
               logDateRange={state.logDateRange}
               applyTimePreset={state.applyTimePreset}
               applyFullDateRange={state.applyFullDateRange}
-              filteredLogs={state.filteredLogs}
-              parsedLogs={state.parsedLogs}
-              setActiveLog={state.setActiveLog}
-              setIsDrawerOpen={state.setIsDrawerOpen}
-              availableLevels={state.availableLevels}
-              
+
               isTailing={state.isTailing}
               setIsTailing={state.setIsTailing}
               isTailPaused={state.isTailPaused}
@@ -128,12 +122,6 @@ export function App() {
               tailBufferLimit={state.tailBufferLimit}
               setTailBufferLimit={state.setTailBufferLimit}
               pausedLogsCount={state.pausedLogs.length}
-
-              presets={state.presets}
-              activePresetId={state.activePresetId}
-              saveCurrentAsPreset={state.saveCurrentAsPreset}
-              applyPreset={state.applyPreset}
-              deletePreset={state.deletePreset}
             />
           </ErrorBoundary>
         )}
