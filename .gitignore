@@ -11,6 +11,7 @@ package-lock.json
 dist/
 build/
 .vite/
+public/assets/
 
 # IDE
 .vscode/
