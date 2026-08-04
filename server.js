@@ -46,7 +46,12 @@ function encrypt(text) {
     return `${iv.toString('hex')}:${encrypted}`;
   } catch (err) {
     console.error('Encryption failed:', err);
-    return text;
+    // SECURITY: refusing to return plaintext prevents the secret from being
+    // written unencrypted to ssh_connections.json / system_settings.json when
+    // the master key is missing/corrupt. Callers MUST handle this throw.
+    const wrapped = new Error('Encryption failed: master key missing or corrupt');
+    wrapped.cause = err;
+    throw wrapped;
   }
 }
 
@@ -132,7 +137,7 @@ function saveSystemSettings(settings) {
       aiEndpoint: settings.aiEndpoint !== undefined ? settings.aiEndpoint : raw.aiEndpoint,
       aiModel: settings.aiModel !== undefined ? settings.aiModel : raw.aiModel,
     };
-    
+
     let encryptedKey = raw.aiApiKey ? encrypt(raw.aiApiKey) : '';
     if (settings.aiApiKey !== undefined) {
       if (settings.aiApiKey === '') {
@@ -144,8 +149,10 @@ function saveSystemSettings(settings) {
     merged.aiApiKey = encryptedKey;
 
     fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2), 'utf8');
+    return { ok: true };
   } catch (err) {
     console.error('Error saving settings file:', err);
+    return { ok: false, error: err.message || String(err) };
   }
 }
 
@@ -179,8 +186,10 @@ function saveSshConnections(connections) {
       sudoPassword: conn.sudoPassword ? encrypt(conn.sudoPassword) : ''
     }));
     fs.writeFileSync(SSH_CONFIG_PATH, JSON.stringify(encryptedConnections, null, 2), 'utf8');
+    return { ok: true };
   } catch (err) {
     console.error('Error saving SSH connections file:', err);
+    return { ok: false, error: err.message || String(err) };
   }
 }
 
@@ -618,7 +627,10 @@ app.post('/api/ssh-connections', express.json(), (req, res) => {
     connections.push(connectionData);
   }
 
-  saveSshConnections(connections);
+  const result = saveSshConnections(connections);
+  if (!result.ok) {
+    return res.status(500).json({ error: result.error });
+  }
   res.json({ success: true, connection: connectionData });
 });
 
@@ -630,7 +642,10 @@ app.delete('/api/ssh-connections/:id', (req, res) => {
   const { id } = req.params;
   const connections = getSshConnections();
   const filtered = connections.filter(c => c.id !== id);
-  saveSshConnections(filtered);
+  const result = saveSshConnections(filtered);
+  if (!result.ok) {
+    return res.status(500).json({ error: result.error });
+  }
   res.json({ success: true });
 });
 
@@ -699,7 +714,10 @@ app.post('/api/settings', express.json(), (req, res) => {
   }
 
   // Save to config file
-  saveSystemSettings(settings);
+  const saveResult = saveSystemSettings(settings);
+  if (!saveResult.ok) {
+    return res.status(500).json({ error: saveResult.error });
+  }
 
   if (settings.localLogsDir !== undefined) {
     console.log(`[Settings] Local logs directory updated to: ${LOGS_DIR}`);
