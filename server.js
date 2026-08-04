@@ -17,24 +17,104 @@ const SSH_CONFIG_PATH = path.join(__dirname, 'ssh_connections.json');
 
 const ALGORITHM = 'aes-256-cbc';
 const MASTER_KEY_PATH = path.join(__dirname, 'master.key');
+const KEY_LENGTH = 32; // AES-256 requires exactly 32 bytes
 let ENCRYPTION_KEY;
 
-if (fs.existsSync(MASTER_KEY_PATH)) {
-  try {
-    ENCRYPTION_KEY = fs.readFileSync(MASTER_KEY_PATH);
-  } catch (err) {
-    console.error('Failed to read master key file:', err);
-    ENCRYPTION_KEY = crypto.randomBytes(32);
-    fs.writeFileSync(MASTER_KEY_PATH, ENCRYPTION_KEY);
+/**
+ * Loads and validates the master key. Behavior:
+ *   - If master.key exists but cannot be read OR has the wrong length, the
+ *     server refuses to start (process.exit(1)) to prevent silent data loss
+ *     of previously encrypted SSH credentials and API keys in JSON files.
+ *   - If master.key exists and is valid, runs a roundtrip self-test to make
+ *     sure crypto primitives work with this key before continuing.
+ *   - If master.key does NOT exist, generates a new one (first-run case).
+ */
+function loadOrCreateMasterKey() {
+  if (fs.existsSync(MASTER_KEY_PATH)) {
+    let key;
+    try {
+      key = fs.readFileSync(MASTER_KEY_PATH);
+    } catch (err) {
+      console.error('');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(' FATAL: cannot read master.key');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(`  Path: ${MASTER_KEY_PATH}`);
+      console.error(`  Error: ${err.message}`);
+      console.error('');
+      console.error('  LogScope will NOT start to prevent overwriting an');
+      console.error('  unreadable key, which would make all encrypted');
+      console.error('  SSH passwords and API keys permanently undecryptable.');
+      console.error('');
+      console.error('  Fix the file permissions and try again, or restore');
+      console.error('  the key from a backup if it was lost.');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      process.exit(1);
+    }
+
+    if (key.length !== KEY_LENGTH) {
+      console.error('');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(' FATAL: master.key has invalid length');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(`  Path: ${MASTER_KEY_PATH}`);
+      console.error(`  Expected: ${KEY_LENGTH} bytes (AES-256)`);
+      console.error(`  Actual:   ${key.length} bytes`);
+      console.error('');
+      console.error('  LogScope will NOT start to prevent silent rotation');
+      console.error('  of a corrupt key, which would make all encrypted');
+      console.error('  SSH passwords and API keys permanently undecryptable.');
+      console.error('');
+      console.error('  Restore the original key from backup, or delete the');
+      console.error('  file (you will need to re-enter all credentials).');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      process.exit(1);
+    }
+
+    // Roundtrip self-test: confirm crypto works with this key.
+    try {
+      const iv = crypto.randomBytes(16);
+      const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+      const testPlain = 'logscope-master-key-self-test';
+      const encrypted = Buffer.concat([cipher.update(testPlain, 'utf8'), cipher.final()]);
+      const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+      const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+      if (decrypted !== testPlain) {
+        throw new Error('Roundtrip mismatch: decrypted text differs from original');
+      }
+    } catch (err) {
+      console.error('');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(' FATAL: master.key failed self-test');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(`  Path: ${MASTER_KEY_PATH}`);
+      console.error(`  Error: ${err.message}`);
+      console.error('');
+      console.error('  The key was read but crypto operations with it');
+      console.error('  failed. This usually means the key is corrupt.');
+      console.error('');
+      console.error('  Restore the original key from backup, or delete the');
+      console.error('  file (you will need to re-enter all credentials).');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      process.exit(1);
+    }
+
+    return key;
   }
-} else {
-  ENCRYPTION_KEY = crypto.randomBytes(32);
+
+  // First-run case: no master.key exists, create a new one.
+  const key = crypto.randomBytes(KEY_LENGTH);
   try {
-    fs.writeFileSync(MASTER_KEY_PATH, ENCRYPTION_KEY);
+    fs.writeFileSync(MASTER_KEY_PATH, key);
   } catch (err) {
     console.error('Failed to write master key file:', err);
+    // Not fatal: continue in-memory only (will fail on next encrypt
+    // with a clear error thanks to the B5 fix).
   }
+  return key;
 }
+
+ENCRYPTION_KEY = loadOrCreateMasterKey();
 
 function encrypt(text) {
   if (!text) return '';
@@ -46,7 +126,12 @@ function encrypt(text) {
     return `${iv.toString('hex')}:${encrypted}`;
   } catch (err) {
     console.error('Encryption failed:', err);
-    return text;
+    // SECURITY: refusing to return plaintext prevents the secret from being
+    // written unencrypted to ssh_connections.json / system_settings.json when
+    // the master key is missing/corrupt. Callers MUST handle this throw.
+    const wrapped = new Error('Encryption failed: master key missing or corrupt');
+    wrapped.cause = err;
+    throw wrapped;
   }
 }
 
@@ -132,7 +217,7 @@ function saveSystemSettings(settings) {
       aiEndpoint: settings.aiEndpoint !== undefined ? settings.aiEndpoint : raw.aiEndpoint,
       aiModel: settings.aiModel !== undefined ? settings.aiModel : raw.aiModel,
     };
-    
+
     let encryptedKey = raw.aiApiKey ? encrypt(raw.aiApiKey) : '';
     if (settings.aiApiKey !== undefined) {
       if (settings.aiApiKey === '') {
@@ -144,8 +229,10 @@ function saveSystemSettings(settings) {
     merged.aiApiKey = encryptedKey;
 
     fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2), 'utf8');
+    return { ok: true };
   } catch (err) {
     console.error('Error saving settings file:', err);
+    return { ok: false, error: err.message || String(err) };
   }
 }
 
@@ -179,27 +266,46 @@ function saveSshConnections(connections) {
       sudoPassword: conn.sudoPassword ? encrypt(conn.sudoPassword) : ''
     }));
     fs.writeFileSync(SSH_CONFIG_PATH, JSON.stringify(encryptedConnections, null, 2), 'utf8');
+    return { ok: true };
   } catch (err) {
     console.error('Error saving SSH connections file:', err);
+    return { ok: false, error: err.message || String(err) };
   }
 }
 
 function testSshConnection(config) {
   return new Promise((resolve, reject) => {
     const conn = new Client();
-    conn.on('ready', () => {
-      conn.end();
-      resolve(true);
-    }).on('error', (err) => {
-      reject(err);
-    }).connect({
-      host: config.host,
-      port: parseInt(config.port, 10) || 22,
-      username: config.username,
-      password: config.password || undefined,
-      privateKey: config.privateKeyContent ? config.privateKeyContent : (config.privateKeyPath ? fs.readFileSync(config.privateKeyPath) : undefined),
-      readyTimeout: 7000
-    });
+    let settled = false;
+    // Outer watchdog: even if the remote host never emits 'ready' or
+    // 'error' (flapping network, silent socket close), the promise
+    // will resolve with a clear error after readyTimeout + 2s grace.
+    const readyTimeout = parseInt(config.readyTimeout, 10) || 7000;
+    const watchdog = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { conn.end(); } catch (e) { /* already closed */ }
+      reject(new Error(`SSH connection timeout after ${readyTimeout + 2000}ms (no 'ready' or 'error' from remote)`));
+    }, readyTimeout + 2000);
+
+    const finishResolve = (val) => { if (!settled) { settled = true; clearTimeout(watchdog); conn.end(); resolve(val); } };
+    const finishReject  = (err) => { if (!settled) { settled = true; clearTimeout(watchdog); try { conn.end(); } catch (e) {} reject(err); } };
+
+    conn.on('ready', () => finishResolve(true))
+        .on('error', finishReject)
+        .on('close', () => {
+          // If we never reached 'ready' and the socket just closed, treat
+          // it as a connection failure so the caller doesn't hang.
+          finishReject(new Error('SSH connection closed before reaching ready state'));
+        })
+        .connect({
+          host: config.host,
+          port: parseInt(config.port, 10) || 22,
+          username: config.username,
+          password: config.password || undefined,
+          privateKey: config.privateKeyContent ? config.privateKeyContent : (config.privateKeyPath ? fs.readFileSync(config.privateKeyPath) : undefined),
+          readyTimeout: readyTimeout
+        });
   });
 }
 
@@ -262,7 +368,19 @@ function fixRemotePermissions(config, remoteFilePath, opts = {}) {
   return new Promise((resolve) => {
     const conn = new Client();
     let settled = false;
-    const done = (result) => { if (!settled) { settled = true; resolve(result); } };
+    // Outer watchdog: caps total wait at readyTimeout + 30s (covers both
+    // plain chmod and the sudo escalation). Without this, a flapping
+    // remote host can hang the promise forever — the original code only
+    // listened to 'ready' and 'error', so a silent socket close left
+    // done() never called.
+    const watchdog = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { conn.end(); } catch (e) { /* already closed */ }
+      console.warn(`[fix-perm] outer watchdog fired on ${config.name} (silent timeout)`);
+      resolve({ ok: false, mode: 'plain', stderr: 'SSH connection timeout (no response from remote)' });
+    }, 30000);
+    const done = (result) => { if (!settled) { settled = true; clearTimeout(watchdog); try { conn.end(); } catch (e) {} resolve(result); } };
 
     const escaped = remoteFilePath.replace(/'/g, "'\\''");
 
@@ -325,6 +443,11 @@ function fixRemotePermissions(config, remoteFilePath, opts = {}) {
     }).on('error', (err) => {
       console.warn(`[fix-perm] SSH error on ${config.name}: ${err.message}`);
       done({ ok: false, mode: 'plain', stderr: err.message });
+    }).on('close', () => {
+      // If the socket closes before 'ready' (e.g. remote host killed
+      // the connection, TCP RST), resolve with a clear error instead
+      // of leaving the promise hanging until the outer watchdog fires.
+      done({ ok: false, mode: 'plain', stderr: 'SSH connection closed before ready' });
     }).connect({
       host: config.host,
       port: parseInt(config.port, 10) || 22,
@@ -334,6 +457,56 @@ function fixRemotePermissions(config, remoteFilePath, opts = {}) {
       readyTimeout: 10000
     });
   });
+}
+
+/**
+ * Builds a safe remote file path from a `logDir` and `filename`, defending
+ * against path traversal attacks.
+ *
+ * Why this is needed: the existing per-endpoint check only validates
+ * `filename` (rejects "/", "\", ".."). If a user (or a misconfigured
+ * saved connection) sets `logDir` to e.g. "/etc", a filename like
+ * "passwd" produces "/etc/passwd" — leaking arbitrary files.
+ *
+ * Rules enforced:
+ *   1. `filename` must not contain "/", "\", or "..".
+ *   2. `logDir` (when set and not ".") must be an absolute POSIX path.
+ *   3. `logDir` must not contain ".." segments.
+ *   4. The resolved `logDir + "/" + filename` must still start with the
+ *      normalized `logDir` (the join didn't escape).
+ *
+ * Returns the safe remote path, or null if the input is unsafe.
+ */
+function buildSafeRemotePath(logDir, filename) {
+  if (!filename || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+    return null;
+  }
+  // Filename must look like a log file: only safe chars + a recognized
+  // extension. LogScope is a log viewer, so this is a reasonable
+  // whitelist that still allows patterns like "app.2026-01-15.log" or
+  // "middleware-error_log.txt". Rejecting "passwd" (no extension) and
+  // "/etc/passwd"-style attacks is exactly the goal.
+  if (!/^[A-Za-z0-9._-]+$/.test(filename)) {
+    return null;
+  }
+  if (!/\.(log|txt|out|err)$/i.test(filename)) {
+    return null;
+  }
+  if (!logDir || logDir === '.') {
+    return filename;
+  }
+  if (!path.posix.isAbsolute(logDir)) {
+    return null;
+  }
+  if (logDir.split('/').includes('..')) {
+    return null;
+  }
+  const normalizedBase = path.posix.normalize(logDir).replace(/\/+$/, '');
+  const candidate = path.posix.normalize(`${normalizedBase}/${filename}`);
+  if (candidate !== normalizedBase && !candidate.startsWith(normalizedBase + '/')) {
+    return null;
+  }
+  return candidate;
 }
 
 /**
@@ -352,9 +525,10 @@ app.post('/api/ssh-fix-perm', express.json(), async (req, res) => {
   const config = connections.find(c => c.id === origin);
   if (!config) return res.status(404).json({ ok: false, error: 'SSH connection not found' });
 
-  const remoteFilePath = (config.logDir && config.logDir !== '.')
-    ? `${config.logDir.replace(/\/+$/, '')}/${filename}`
-    : filename;
+  const remoteFilePath = buildSafeRemotePath(config.logDir, filename);
+  if (!remoteFilePath) {
+    return res.status(400).json({ ok: false, error: 'Invalid filename or logDir (path traversal rejected)' });
+  }
 
   const result = await fixRemotePermissions(config, remoteFilePath);
   res.json({ ...result, remoteFilePath, host: config.name });
@@ -457,7 +631,10 @@ app.get('/api/files/:filename', async (req, res) => {
       return res.status(404).json({ error: 'SSH Connection configuration not found' });
     }
 
-    const remoteFilePath = (config.logDir && config.logDir !== '.') ? `${config.logDir}/${filename}` : filename;
+    const remoteFilePath = buildSafeRemotePath(config.logDir, filename);
+    if (!remoteFilePath) {
+      return res.status(400).json({ error: 'Invalid filename or logDir (path traversal rejected)' });
+    }
     let permFixAttempted = false;
 
     const openReadStream = () => {
@@ -585,9 +762,20 @@ app.get('/api/ssh-connections', (req, res) => {
  */
 app.post('/api/ssh-connections', express.json(), (req, res) => {
   const { id, name, host, port, username, authType, password, privateKeyContent, privateKeyPath, logDir, sudoPassword } = req.body;
-  
+
   if (!name || !host || !username) {
     return res.status(400).json({ error: 'Name, Host, and Username are required' });
+  }
+
+  // Validate logDir early to prevent storing a misconfigured path that would
+  // later be combined with arbitrary filenames (see buildSafeRemotePath).
+  // Allow "." (home dir default) or absolute POSIX paths without ".." segments.
+  const finalLogDir = logDir || '.';
+  if (finalLogDir !== '.' && (
+    !path.posix.isAbsolute(finalLogDir) ||
+    finalLogDir.split('/').includes('..')
+  )) {
+    return res.status(400).json({ error: 'logDir must be "." or an absolute POSIX path without ".." segments' });
   }
 
   const connections = getSshConnections();
@@ -599,7 +787,7 @@ app.post('/api/ssh-connections', express.json(), (req, res) => {
     port: parseInt(port, 10) || 22,
     username,
     authType: authType || 'password',
-    logDir: logDir || '.',
+    logDir: finalLogDir,
     privateKeyPath: privateKeyPath || ''
   };
 
@@ -618,7 +806,10 @@ app.post('/api/ssh-connections', express.json(), (req, res) => {
     connections.push(connectionData);
   }
 
-  saveSshConnections(connections);
+  const result = saveSshConnections(connections);
+  if (!result.ok) {
+    return res.status(500).json({ error: result.error });
+  }
   res.json({ success: true, connection: connectionData });
 });
 
@@ -630,7 +821,10 @@ app.delete('/api/ssh-connections/:id', (req, res) => {
   const { id } = req.params;
   const connections = getSshConnections();
   const filtered = connections.filter(c => c.id !== id);
-  saveSshConnections(filtered);
+  const result = saveSshConnections(filtered);
+  if (!result.ok) {
+    return res.status(500).json({ error: result.error });
+  }
   res.json({ success: true });
 });
 
@@ -699,15 +893,26 @@ app.post('/api/settings', express.json(), (req, res) => {
   }
 
   // Save to config file
-  saveSystemSettings(settings);
+  const saveResult = saveSystemSettings(settings);
+  if (!saveResult.ok) {
+    return res.status(500).json({ error: saveResult.error });
+  }
 
   if (settings.localLogsDir !== undefined) {
     console.log(`[Settings] Local logs directory updated to: ${LOGS_DIR}`);
 
-    // Disconnect active WS folder watchers to trigger them to reconnect and see new logs folder files
+    // Disconnect active WS folder watchers AND all tail sockets to make
+    // them reconnect and see the new logs folder. Without closing the
+    // tail sockets, existing tails keep their byte position from the old
+    // directory and may stream the new file from byte 0 (or mix content
+    // from two different inodes if the filename collides).
     for (const client of wss.clients) {
-      if (client.isFilesSocket && client.readyState === WebSocket.OPEN) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      if (client.isFilesSocket) {
         console.log('[Settings] Closing files WebSocket to trigger reconnection...');
+        client.close(1000, 'Directory changed');
+      } else if (client.isTailSocket) {
+        console.log(`[Settings] Closing tail WebSocket for ${client.isRemoteTail ? 'remote' : 'local'} file to force re-open against new directory...`);
         client.close(1000, 'Directory changed');
       }
     }
@@ -1442,6 +1647,16 @@ wss.on('connection', (ws, request) => {
       return;
     }
 
+    // Mark this socket as a tail connection so the settings handler can
+    // close all tails when the user changes localLogsDir. Without this,
+    // existing tails keep their byte position from the old directory
+    // and would stream the new file from byte 0 (or worse, mix content
+    // from two different inodes if the filename collides).
+    ws.isTailSocket = true;
+    if (origin !== 'local') {
+      ws.isRemoteTail = true;
+    }
+
     if (origin === 'local') {
       const filePath = path.join(LOGS_DIR, filename);
       if (!fs.existsSync(filePath)) {
@@ -1538,7 +1753,13 @@ wss.on('connection', (ws, request) => {
       let sshStream;
 
       conn.on('ready', () => {
-        const remoteFilePath = (config.logDir && config.logDir !== '.') ? `${config.logDir}/${filename}` : filename;
+const remoteFilePath = buildSafeRemotePath(config.logDir, filename);
+      if (!remoteFilePath) {
+        console.log(`[WS] Connection rejected: path traversal attempt on filename "${filename}" with logDir "${config.logDir}"`);
+        ws.close(1008, 'Invalid filename or logDir');
+        conn.end();
+        return;
+      }
         console.log(`[WS] SSH connection ready. Running tail on remote file "${remoteFilePath}"...`);
 
         // Execute tail -f on the remote server

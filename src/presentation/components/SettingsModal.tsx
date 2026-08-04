@@ -268,8 +268,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <span className="material-icons-round">settings</span>
             <h2>Ajustes del Sistema</h2>
           </div>
-          <button className="icon-button" onClick={onClose} title="Cerrar Ajustes">
-            <span className="material-icons-round">close</span>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Cerrar Ajustes" title="Cerrar Ajustes">
+            <span className="material-icons-round" aria-hidden="true">close</span>
           </button>
         </div>
 
@@ -562,7 +562,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       className="primary-button"
                       style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px' }}
                     >
-                      <span className="material-icons-round" style={{ fontSize: '16px' }}>save</span>
+                      <span className="material-icons-round" aria-hidden="true" style={{ fontSize: '16px' }}>save</span>
                       {savingLocal ? 'Guardando...' : 'Guardar Ruta'}
                     </button>
                   </div>
@@ -582,6 +582,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                   {!showSshForm && (
                     <button
+                      type="button"
+                      aria-label="Anadir nuevo servidor SSH"
                       onClick={() => {
                         resetSshForm();
                         setShowSshForm(true);
@@ -589,7 +591,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       className="primary-button"
                       style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                     >
-                      <span className="material-icons-round">add</span>
+                      <span className="material-icons-round" aria-hidden="true">add</span>
                       Añadir Servidor
                     </button>
                   )}
@@ -893,15 +895,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               <button
                                 type="button"
                                 className="icon-button"
+                                aria-label={`Editar servidor SSH ${conn.name}`}
                                 title="Editar"
                                 onClick={() => handleEditSsh(conn)}
                                 style={{ width: '28px', height: '28px', borderRadius: '6px', background: 'rgba(255,255,255,0.05)' }}
                               >
-                                <span className="material-icons-round" style={{ fontSize: '16px' }}>edit</span>
+                                <span className="material-icons-round" aria-hidden="true" style={{ fontSize: '16px' }}>edit</span>
                               </button>
                               <button
                                 type="button"
                                 className="icon-button"
+                                aria-label={`Eliminar servidor SSH ${conn.name}`}
                                 title="Eliminar"
                                 onClick={() => {
                                   if (window.confirm(`¿Eliminar servidor SSH "${conn.name}"?`)) {
@@ -910,7 +914,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 }}
                                 style={{ width: '28px', height: '28px', borderRadius: '6px', background: 'rgba(224,108,117,0.1)', color: '#e06c75' }}
                               >
-                                <span className="material-icons-round" style={{ fontSize: '16px' }}>delete</span>
+                                <span className="material-icons-round" aria-hidden="true" style={{ fontSize: '16px' }}>delete</span>
                               </button>
                             </div>
                           </div>

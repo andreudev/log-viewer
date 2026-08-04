@@ -192,6 +192,7 @@ export function App() {
             <FiltersPanel 
               filters={state.filters}
               setFilters={state.setFilters}
+              resetFilters={state.resetFilters}
               setCurrentPage={state.setCurrentPage}
               uniqueServices={state.uniqueServices}
               handleLevelClick={state.handleLevelClick}

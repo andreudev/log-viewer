@@ -4,6 +4,7 @@ import { LogLevel } from '../../domain/models/LogEntry';
 import { defaultLevels } from '../../domain/parsing/parseLogs';
 import { getLevelColor } from '../utils/constants';
 import { SearchableSelect } from './SearchableSelect';
+import { IconButton } from './IconButton';
 import { LogEntry } from '../../domain/models/LogEntry';
 import { FilterPreset } from '../../domain/models/FilterPreset';
 
@@ -18,6 +19,7 @@ import { LogTimeline } from './filters/LogTimeline';
 interface FiltersPanelProps {
   filters: FilterState;
   setFilters: React.Dispatch<React.SetStateAction<FilterState>>;
+  resetFilters: () => void;
   setCurrentPage: React.Dispatch<React.SetStateAction<number>>;
   uniqueServices: string[];
   handleLevelClick: (level: LogLevel) => void;
@@ -55,6 +57,7 @@ interface FiltersPanelProps {
 export const FiltersPanel: React.FC<FiltersPanelProps> = ({
   filters,
   setFilters,
+  resetFilters,
   setCurrentPage,
   uniqueServices,
   handleLevelClick,
@@ -182,6 +185,37 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
           setCurrentPage={setCurrentPage}
         />
       )}
+
+      {/* Reset filters button — only visible when at least one filter is active.
+          Avoids the "stuck with no results, can't figure out why" UX dead-end. */}
+      {activeFiltersCount > 0 && (
+        <button
+          type="button"
+          className="reset-filters-btn"
+          onClick={resetFilters}
+          aria-label={`Limpiar ${activeFiltersCount} filtros activos`}
+          title={`Limpiar ${activeFiltersCount} filtros y volver a la vista sin filtros`}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '6px',
+            padding: '6px 10px',
+            background: 'var(--bg-panel, rgba(255,255,255,0.05))',
+            border: '1px solid var(--border-color, rgba(255,255,255,0.15))',
+            borderRadius: '6px',
+            color: 'var(--text-primary, #e0e0e0)',
+            cursor: 'pointer',
+            fontSize: '12px',
+            fontWeight: 500,
+            transition: 'background 120ms ease, border-color 120ms ease',
+            width: '100%'
+          }}
+        >
+          <span className="material-icons-round" style={{ fontSize: '16px' }} aria-hidden="true">filter_alt_off</span>
+          <span>Limpiar filtros ({activeFiltersCount})</span>
+        </button>
+      )}
       
       {/* Primary search row */}
       <div className="filter-row search-row" style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%' }}>
@@ -206,11 +240,14 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
             autoComplete="off"
           />
           {filters.searchTerm && (
-            <button 
-              className="clear-search-btn" 
+            <button
+              type="button"
+              className="clear-search-btn"
+              aria-label="Limpiar busqueda"
+              title="Limpiar busqueda"
               onClick={() => { setFilters(p => ({ ...p, searchTerm: '' })); setCurrentPage(1); }}
             >
-              <span className="material-icons-round">close</span>
+              <span className="material-icons-round" aria-hidden="true">close</span>
             </button>
           )}
 

@@ -60,6 +60,27 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     correlationId: null,
     quickFilter: 'NONE'
   });
+  /**
+   * Restablece todos los filtros a su estado inicial. Usado por el botón
+   * "Reset" en FiltersPanel y al cargar un nuevo archivo. Mantiene los
+   * archivos seleccionados y la paginación también se reinicia a 1.
+   */
+  const resetFilters = useCallback(() => {
+    setFilters({
+      activeLevels: defaultLevels(),
+      activeService: 'ALL',
+      searchTerm: '',
+      isRegexSearch: false,
+      isPayloadsOnly: false,
+      dateFrom: null,
+      dateTo: null,
+      correlationId: null,
+      quickFilter: 'NONE'
+    });
+    setSortColumn(null);
+    setSortDirection('asc');
+    setCurrentPage(1);
+  }, []);
   const [sortColumn, setSortColumn] = useState<SortColumn>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [currentPage, setCurrentPage] = useState(1);
@@ -489,6 +510,28 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     tailBufferLimitRef.current = tailBufferLimit;
   }, [tailBufferLimit]);
 
+  // The following refs allow the tail WebSocket callback to read the latest
+  // values WITHOUT re-subscribing every time the user edits a rule, saves
+  // an annotation, toggles desktop notifications, or changes the webhook
+  // config. Re-subscribing tears down all live tails and reopens them,
+  // which (a) drops in-flight lines from the server, (b) re-fires the
+  // initial `tail -n 200` causing duplicate lines, and (c) wastes a
+  // reconnect roundtrip on every keystroke in the annotation textarea.
+  const rulesRef = useRef(rules);
+  useEffect(() => { rulesRef.current = rules; }, [rules]);
+
+  const annotationsRef = useRef(annotations);
+  useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
+
+  const desktopAlertsEnabledRef = useRef(desktopAlertsEnabled);
+  useEffect(() => { desktopAlertsEnabledRef.current = desktopAlertsEnabled; }, [desktopAlertsEnabled]);
+
+  const webhookEnabledRef = useRef(webhookEnabled);
+  useEffect(() => { webhookEnabledRef.current = webhookEnabled; }, [webhookEnabled]);
+
+  const dispatchWebhookAlertRef = useRef(dispatchWebhookAlert);
+  useEffect(() => { dispatchWebhookAlertRef.current = dispatchWebhookAlert; }, [dispatchWebhookAlert]);
+
   useEffect(() => {
     if (!isTailing) {
       // User toggled tail off -> drop every channel
@@ -510,8 +553,9 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
               entry.originFile = sub.key;
               entry.originalId = entry.id;
 
-              // Apply severity promotion rules
-              for (const rule of rules) {
+              // Apply severity promotion rules (read latest from ref to avoid
+              // re-subscribing on every rule edit).
+              for (const rule of rulesRef.current) {
                 if (rule.enabled && (entry.message || '').includes(rule.pattern)) {
                   entry.level = rule.targetLevel;
                   entry.customBadge = rule.customBadge;
@@ -519,16 +563,16 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
                 }
               }
 
-              // Inject annotation if already exists
+              // Inject annotation if already exists (read from ref).
               const noteKey = `${entry.originFile}::${entry.originalId}`;
-              const savedAnn = annotations[noteKey];
+              const savedAnn = annotationsRef.current[noteKey];
               if (savedAnn) {
                 entry.annotation = typeof savedAnn === 'object' && savedAnn !== null ? (savedAnn as any).text : (savedAnn as string);
               }
 
               // Trigger desktop notification if backgrounded and is critical severity or customBadge
               if (
-                desktopAlertsEnabled &&
+                desktopAlertsEnabledRef.current &&
                 document.visibilityState === 'hidden' &&
                 (entry.level === 'ERROR' || entry.level === 'WARN' || entry.customBadge)
               ) {
@@ -550,10 +594,10 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
 
               // Trigger webhook alert if enabled and is critical severity or customBadge
               if (
-                webhookEnabled &&
+                webhookEnabledRef.current &&
                 (entry.level === 'ERROR' || entry.level === 'WARN' || entry.customBadge)
               ) {
-                dispatchWebhookAlert(entry);
+                dispatchWebhookAlertRef.current(entry);
               }
             });
 
@@ -602,7 +646,12 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     return () => {
       disconnectTail();
     };
-  }, [isTailing, selectedFiles.join('|'), parsers, rules, annotations, desktopAlertsEnabled, webhookEnabled, dispatchWebhookAlert]);
+    // IMPORTANT: only re-subscribe when the subscription set itself changes.
+    // rules/annotations/desktopAlertsEnabled/webhookEnabled/dispatchWebhookAlert
+    // are read inside the callback via refs (rulesRef, annotationsRef, etc.)
+    // so editing them does NOT tear down live tails. Adding them here would
+    // cause a reconnect storm on every annotation keystroke or rule toggle.
+  }, [isTailing, selectedFiles.join('|'), parsers]);
 
   // Effect to merge pausedLogs when resuming tailing
   useEffect(() => {
@@ -672,7 +721,20 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
         if (size > 0 && mtime) {
           const cached = await getLogsFromCache(name, size, mtime, rulesHash, parsersHash);
           if (cached) {
-            cachedParts.push({ name, logs: cached });
+            // Defensive: ensure every cached entry has a stable originalId.
+            // Older cache entries (or those from before the originalId field
+            // existed) won't have it; fall back to the cached id which was the
+            // parser-assigned identity at the time of caching. From now on
+            // originalId is preserved across cache reads, so pins and
+            // annotations keyed by `${originFile}::${originalId}` survive
+            // reloads even when `id` is re-assigned during sort.
+            const stamped = cached.map(entry => {
+              if (entry.originalId === undefined || entry.originalId === null) {
+                return { ...entry, originalId: entry.id };
+              }
+              return entry;
+            });
+            cachedParts.push({ name, logs: stamped });
           } else {
             allLogsCached = false;
             uncachedFileNames.push(name);
@@ -756,7 +818,10 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
           return 0;
         });
 
-        // Recalculate deltas and ids
+        // Recalculate deltas and ids.
+        // NOTE: we only re-assign the *display* `id`. The `originalId` field
+        // (set by the parser or stamped from cache) is the STABLE identity
+        // used by pins/annotations and must never be overwritten here.
         finalLogs.forEach((item, idx) => {
           item.id = idx + 1;
         });
@@ -983,21 +1048,7 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
       });
       
       localStorage.setItem(`activeFileName_${paneId}`, file.name);
-      setFilters(p => ({
-        ...p,
-        activeService: 'ALL',
-        searchTerm: '',
-        isRegexSearch: false,
-        isPayloadsOnly: false,
-        dateFrom: null,
-        dateTo: null,
-        correlationId: null,
-        activeLevels: defaultLevels(),
-        quickFilter: 'NONE'
-      }));
-      setSortColumn(null);
-      setSortDirection('asc');
-      setCurrentPage(1);
+      resetFilters();
       setActiveLog(null);
       setIsDrawerOpen(false);
     };
@@ -1381,6 +1432,7 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     parsedLogs,
     filters,
     setFilters,
+    resetFilters,
     sortColumn,
     setSortColumn,
     sortDirection,
