@@ -532,6 +532,185 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
   const dispatchWebhookAlertRef = useRef(dispatchWebhookAlert);
   useEffect(() => { dispatchWebhookAlertRef.current = dispatchWebhookAlert; }, [dispatchWebhookAlert]);
 
+  // === Tail batching / flush ============================================
+  // Acumular lineas crudas del WS en una cola y vaciarlas cada 50ms (o al
+  // llegar a 100 lineas). Cada flush:
+  //   1. parsea todas las lineas juntas (1 sola llamada a parseLogs en vez
+  //      de N llamadas - el regex compila 1 vez, no N).
+  //   2. actualiza setParsedLogs una sola vez (1 re-render en vez de N).
+  //   3. re-indexa ids solo cuando hace falta (trim por buffer overflow o
+  //      batches grandes), evitando O(n) por cada linea.
+  // Sin batching, una rafaga de 200 logs/seg genera 200 re-renders/seg y
+  // el navegador se ahoga.
+  const TAIL_BATCH_INTERVAL_MS = 50;
+  const TAIL_BATCH_MAX_LINES = 100;
+  const TAIL_REINDEX_THRESHOLD = 50;
+
+  // Cada item de la cola es { line, originFile } para soportar multiples
+  // archivos tailed simultaneamente sin perder el origen.
+  const tailBatchQueueRef = useRef<{ line: string; originFile: string }[]>([]);
+  const tailBatchTimerRef = useRef<any>(null);
+  const tailBatchRafRef = useRef<number | null>(null);
+  const tailFlushingRef = useRef<boolean>(false);
+
+  // Estado del WS mas reciente para el indicador LIVE.
+  // tailStatusRef.current se actualiza en el callback onStatus (sin re-render).
+  // tailStatusTick fuerza re-render del TailIndicator cuando cambia el estado.
+  const tailStatusRef = useRef<any>({ state: 'closed' });
+  const [tailStatusTick, setTailStatusTick] = useState(0);
+
+  const flushTailBatch = useCallback(() => {
+    // Si ya hay un flush en curso, dejar que termine (evita recursion).
+    if (tailFlushingRef.current) return;
+    tailFlushingRef.current = true;
+
+    const queue = tailBatchQueueRef.current;
+    tailBatchQueueRef.current = [];
+    tailBatchTimerRef.current = null;
+    tailBatchRafRef.current = null;
+
+    if (queue.length === 0) {
+      tailFlushingRef.current = false;
+      return;
+    }
+
+    // Parsear cada linea del batch (que viene de su originFile respectivo).
+    // Si una linea produce multiples entries (caso multilinea pegada), todas
+    // heredan el mismo originFile (suficiente para filtros per-file).
+    const allParsed: { entry: any; originFile: string }[] = [];
+    for (const item of queue) {
+      const parsed = parseLogs(item.line, parsers);
+      for (const entry of parsed) {
+        allParsed.push({ entry, originFile: item.originFile });
+      }
+    }
+
+    if (allParsed.length === 0) {
+      tailFlushingRef.current = false;
+      return;
+    }
+
+    // Tag con originFile + originalId
+    for (const { entry, originFile } of allParsed) {
+      entry.originFile = originFile;
+      entry.originalId = entry.id;
+    }
+
+    const entries = allParsed.map(p => p.entry);
+
+    if (isTailPausedRef.current) {
+      setPausedLogs(prev => {
+        let next = [...prev, ...entries];
+        if (next.length > tailBufferLimitRef.current) {
+          next = next.slice(next.length - tailBufferLimitRef.current);
+        }
+        return next;
+      });
+    } else {
+      setParsedLogs(prev => {
+        // Calcular deltas por correlationId
+        entries.forEach(entry => {
+          const lastEntryWithSameCid = [...prev].reverse().find(e => e.correlationId === entry.correlationId && e.correlationId !== '-');
+          if (lastEntryWithSameCid) {
+            const prevTime = parseTimestamp(lastEntryWithSameCid.timestamp);
+            const currTime = parseTimestamp(entry.timestamp);
+            if (prevTime && currTime) {
+              entry.deltaTimeMs = currTime.getTime() - prevTime.getTime();
+            }
+          }
+        });
+
+        let next = [...prev, ...entries];
+        const trimmed = next.length > tailBufferLimitRef.current;
+        if (trimmed) {
+          next = next.slice(next.length - tailBufferLimitRef.current);
+        }
+        // Re-index SOLO cuando hubo trim O el batch fue grande.
+        // Antes re-indexabamos SIEMPRE, que es O(n) por cada flush.
+        if (trimmed || queue.length >= TAIL_REINDEX_THRESHOLD) {
+          next.forEach((item, idx) => { item.id = idx + 1; });
+        }
+        return next;
+      });
+    }
+
+    // Reglas, anotaciones, notificaciones y webhook -> microtask post-render.
+    // Asi no bloqueamos el render principal ni notificamos antes de que el
+    // usuario vea la linea en pantalla.
+    queueMicrotask(() => {
+      for (const entry of entries) {
+        for (const rule of rulesRef.current) {
+          if (rule.enabled && (entry.message || '').includes(rule.pattern)) {
+            entry.level = rule.targetLevel;
+            entry.customBadge = rule.customBadge;
+            break;
+          }
+        }
+
+        const noteKey = `${entry.originFile}::${entry.originalId}`;
+        const savedAnn = annotationsRef.current[noteKey];
+        if (savedAnn) {
+          entry.annotation = typeof savedAnn === 'object' && savedAnn !== null
+            ? (savedAnn as any).text
+            : (savedAnn as string);
+        }
+
+        if (
+          desktopAlertsEnabledRef.current &&
+          document.visibilityState === 'hidden' &&
+          (entry.level === 'ERROR' || entry.level === 'WARN' || entry.customBadge)
+        ) {
+          const title = `🚨 [${entry.level}] ${entry.service || 'Alerta LogScope'}`;
+          const snippet = entry.message.slice(0, 120) + (entry.message.length > 120 ? '...' : '');
+          try {
+            const notification = new Notification(title, { body: snippet, icon: '/favicon.ico' });
+            notification.onclick = () => { window.focus(); };
+          } catch (e) {
+            console.error('Error triggering notification:', e);
+          }
+        }
+
+        if (
+          webhookEnabledRef.current &&
+          (entry.level === 'ERROR' || entry.level === 'WARN' || entry.customBadge)
+        ) {
+          dispatchWebhookAlertRef.current(entry);
+        }
+      }
+    });
+
+    tailFlushingRef.current = false;
+  }, [parsers]);
+
+  /**
+   * Encola una linea cruda del WS con su originFile. Si el batch esta
+   * lleno, fuerza flush; si no, agenda un flush en 50ms.
+   */
+  const enqueueTailLine = useCallback((line: string, originFile: string) => {
+    tailBatchQueueRef.current.push({ line, originFile });
+
+    if (tailBatchQueueRef.current.length >= TAIL_BATCH_MAX_LINES) {
+      // Flush inmediato via rAF para no bloquear el event loop del WS
+      if (tailBatchRafRef.current === null) {
+        tailBatchRafRef.current = requestAnimationFrame(() => {
+          tailBatchRafRef.current = null;
+          if (tailBatchTimerRef.current) {
+            clearTimeout(tailBatchTimerRef.current);
+            tailBatchTimerRef.current = null;
+          }
+          flushTailBatch();
+        });
+      }
+    } else if (tailBatchTimerRef.current === null) {
+      tailBatchTimerRef.current = setTimeout(() => {
+        tailBatchRafRef.current = requestAnimationFrame(() => {
+          tailBatchRafRef.current = null;
+          flushTailBatch();
+        });
+      }, TAIL_BATCH_INTERVAL_MS);
+    }
+  }, [flushTailBatch]);
+
   useEffect(() => {
     if (!isTailing) {
       // User toggled tail off -> drop every channel
@@ -540,118 +719,50 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     }
 
     // Subscribe to every selected file. connectTail is idempotent for the
-    // same (filename, origin) key, so this is cheap to re-run.
+    // same (filename, origin) key, asi que esto es barato de re-ejecutar.
     for (const sub of tailSubscriptions) {
       connectTail(
         sub.filename,
         (line) => {
-          const parsed = parseLogs(line, parsers);
-          if (parsed.length > 0) {
-            parsed.forEach(entry => {
-              // Tag the line with the full key so per-file annotations work
-              // and so downstream filters can distinguish sources.
-              entry.originFile = sub.key;
-              entry.originalId = entry.id;
-
-              // Apply severity promotion rules (read latest from ref to avoid
-              // re-subscribing on every rule edit).
-              for (const rule of rulesRef.current) {
-                if (rule.enabled && (entry.message || '').includes(rule.pattern)) {
-                  entry.level = rule.targetLevel;
-                  entry.customBadge = rule.customBadge;
-                  break;
-                }
-              }
-
-              // Inject annotation if already exists (read from ref).
-              const noteKey = `${entry.originFile}::${entry.originalId}`;
-              const savedAnn = annotationsRef.current[noteKey];
-              if (savedAnn) {
-                entry.annotation = typeof savedAnn === 'object' && savedAnn !== null ? (savedAnn as any).text : (savedAnn as string);
-              }
-
-              // Trigger desktop notification if backgrounded and is critical severity or customBadge
-              if (
-                desktopAlertsEnabledRef.current &&
-                document.visibilityState === 'hidden' &&
-                (entry.level === 'ERROR' || entry.level === 'WARN' || entry.customBadge)
-              ) {
-                const title = `🚨 [${entry.level}] ${entry.service || 'Alerta LogScope'}`;
-                const snippet = entry.message.slice(0, 120) + (entry.message.length > 120 ? '...' : '');
-                const options = {
-                  body: snippet,
-                  icon: '/favicon.ico'
-                };
-                try {
-                  const notification = new Notification(title, options);
-                  notification.onclick = () => {
-                    window.focus();
-                  };
-                } catch (e) {
-                  console.error('Error triggering notification:', e);
-                }
-              }
-
-              // Trigger webhook alert if enabled and is critical severity or customBadge
-              if (
-                webhookEnabledRef.current &&
-                (entry.level === 'ERROR' || entry.level === 'WARN' || entry.customBadge)
-              ) {
-                dispatchWebhookAlertRef.current(entry);
-              }
-            });
-
-            if (isTailPausedRef.current) {
-              setPausedLogs(prev => {
-                let next = [...prev, ...parsed];
-                if (next.length > tailBufferLimitRef.current) {
-                  next = next.slice(next.length - tailBufferLimitRef.current);
-                }
-                return next;
-              });
-            } else {
-              setParsedLogs(prev => {
-                parsed.forEach(entry => {
-                  const lastEntryWithSameCid = [...prev].reverse().find(e => e.correlationId === entry.correlationId && e.correlationId !== '-');
-                  if (lastEntryWithSameCid) {
-                    const prevTime = parseTimestamp(lastEntryWithSameCid.timestamp);
-                    const currTime = parseTimestamp(entry.timestamp);
-                    if (prevTime && currTime) {
-                      entry.deltaTimeMs = currTime.getTime() - prevTime.getTime();
-                    }
-                  }
-                });
-
-                let next = [...prev, ...parsed];
-                if (next.length > tailBufferLimitRef.current) {
-                  next = next.slice(next.length - tailBufferLimitRef.current);
-                }
-                // Re-index IDs consecutively
-                next.forEach((item, idx) => {
-                  item.id = idx + 1;
-                });
-                return next;
-              });
-            }
-          }
+          // Cada WS onmessage solo encola. El flush se hace en batch via
+          // rAF/setTimeout (ver flushTailBatch arriba). Eso elimina el lag
+          // perceptible cuando entran rafagas de logs.
+          enqueueTailLine(line, sub.key);
         },
         (err) => {
           console.error(`Tail WebSocket error callback for ${sub.key}:`, err);
         },
-        sub.origin
+        sub.origin,
+        (status) => {
+          // Estado del WS hacia el indicador LIVE (boton + tooltip).
+          // tailStatusRef se setea aca y se consulta en render via getTailStatus().
+          tailStatusRef.current = status;
+          // Forzar re-render del indicador. Usamos un counter para evitar
+          // setState sobre el state grande.
+          setTailStatusTick(t => t + 1);
+        }
       );
     }
 
-    // On unmount or when isTailing flips off we close every channel.
+    // On unmount o cuando isTailing se apaga: cerrar todos los channels
+    // y vaciar la cola pendiente.
     return () => {
+      if (tailBatchTimerRef.current) {
+        clearTimeout(tailBatchTimerRef.current);
+        tailBatchTimerRef.current = null;
+      }
+      if (tailBatchRafRef.current !== null) {
+        cancelAnimationFrame(tailBatchRafRef.current);
+        tailBatchRafRef.current = null;
+      }
+      tailBatchQueueRef.current = [];
       disconnectTail();
     };
     // IMPORTANT: only re-subscribe when the subscription set itself changes.
     // rules/annotations/desktopAlertsEnabled/webhookEnabled/dispatchWebhookAlert
-    // are read inside the callback via refs (rulesRef, annotationsRef, etc.)
-    // so editing them does NOT tear down live tails. Adding them here would
-    // cause a reconnect storm on every annotation keystroke or rule toggle.
-  }, [isTailing, selectedFiles.join('|'), parsers]);
+    // se leen dentro del callback via refs. Agregarlos aqui causaria un
+    // reconnect storm en cada keystroke de anotacion o toggle de regla.
+  }, [isTailing, selectedFiles.join('|'), parsers, enqueueTailLine]);
 
   // Effect to merge pausedLogs when resuming tailing
   useEffect(() => {
@@ -1520,6 +1631,8 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     pausedLogs,
     tailBufferLimit,
     setTailBufferLimit,
+    tailStatus: tailStatusRef.current,
+    tailStatusTick,
     // Presets
     presets,
     setPresets,

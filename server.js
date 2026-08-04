@@ -1657,6 +1657,21 @@ wss.on('connection', (ws, request) => {
       ws.isRemoteTail = true;
     }
 
+    // Heartbeat: respond to {type:'ping'} messages with {type:'pong'} so the
+    // client knows the connection is alive. Without this, idle TCP connections
+    // can die behind a proxy/firewall and the tail would silently stop
+    // until the user reloads the app.
+    ws.on('message', (rawMsg) => {
+      try {
+        const msg = JSON.parse(rawMsg.toString());
+        if (msg && msg.type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong', t: Date.now() }));
+        }
+      } catch (_) {
+        // ignore non-JSON messages
+      }
+    });
+
     if (origin === 'local') {
       const filePath = path.join(LOGS_DIR, filename);
       if (!fs.existsSync(filePath)) {

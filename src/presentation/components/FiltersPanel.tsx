@@ -4,7 +4,7 @@ import { defaultLevels } from '../../domain/parsing/parseLogs';
 import { SearchableSelect } from './SearchableSelect';
 import { IconButton } from './IconButton';
 import { DateRangePicker } from './filters/DateRangePicker';
-import { TailIndicator } from './TailIndicator';
+import { TailIndicator, TailStatus } from './TailIndicator';
 
 interface FiltersPanelProps {
   filters: FilterState;
@@ -29,6 +29,8 @@ interface FiltersPanelProps {
   tailBufferLimit: number;
   setTailBufferLimit: (limit: number) => void;
   pausedLogsCount: number;
+  tailStatus?: TailStatus;
+  tailStatusTick?: number;
 }
 
 /**
@@ -69,6 +71,8 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
   tailBufferLimit,
   setTailBufferLimit,
   pausedLogsCount,
+  tailStatus,
+  tailStatusTick,
 }) => {
   // Contador minimal: solo lo que realmente esta filtrando la vista.
   const activeFiltersCount = useMemo(() => {
@@ -296,6 +300,8 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
           tailBufferLimit={tailBufferLimit}
           setTailBufferLimit={setTailBufferLimit}
           pausedLogsCount={pausedLogsCount}
+          tailStatus={tailStatus}
+          tailStatusTick={tailStatusTick}
         />
       </div>
     </section>
