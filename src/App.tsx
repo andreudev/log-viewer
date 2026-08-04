@@ -122,6 +122,8 @@ export function App() {
               tailBufferLimit={state.tailBufferLimit}
               setTailBufferLimit={state.setTailBufferLimit}
               pausedLogsCount={state.pausedLogs.length}
+              tailStatus={state.tailStatus}
+              tailStatusTick={state.tailStatusTick}
             />
           </ErrorBoundary>
         )}
