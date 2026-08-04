@@ -426,6 +426,56 @@ function fixRemotePermissions(config, remoteFilePath, opts = {}) {
 }
 
 /**
+ * Builds a safe remote file path from a `logDir` and `filename`, defending
+ * against path traversal attacks.
+ *
+ * Why this is needed: the existing per-endpoint check only validates
+ * `filename` (rejects "/", "\", ".."). If a user (or a misconfigured
+ * saved connection) sets `logDir` to e.g. "/etc", a filename like
+ * "passwd" produces "/etc/passwd" — leaking arbitrary files.
+ *
+ * Rules enforced:
+ *   1. `filename` must not contain "/", "\", or "..".
+ *   2. `logDir` (when set and not ".") must be an absolute POSIX path.
+ *   3. `logDir` must not contain ".." segments.
+ *   4. The resolved `logDir + "/" + filename` must still start with the
+ *      normalized `logDir` (the join didn't escape).
+ *
+ * Returns the safe remote path, or null if the input is unsafe.
+ */
+function buildSafeRemotePath(logDir, filename) {
+  if (!filename || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+    return null;
+  }
+  // Filename must look like a log file: only safe chars + a recognized
+  // extension. LogScope is a log viewer, so this is a reasonable
+  // whitelist that still allows patterns like "app.2026-01-15.log" or
+  // "middleware-error_log.txt". Rejecting "passwd" (no extension) and
+  // "/etc/passwd"-style attacks is exactly the goal.
+  if (!/^[A-Za-z0-9._-]+$/.test(filename)) {
+    return null;
+  }
+  if (!/\.(log|txt|out|err)$/i.test(filename)) {
+    return null;
+  }
+  if (!logDir || logDir === '.') {
+    return filename;
+  }
+  if (!path.posix.isAbsolute(logDir)) {
+    return null;
+  }
+  if (logDir.split('/').includes('..')) {
+    return null;
+  }
+  const normalizedBase = path.posix.normalize(logDir).replace(/\/+$/, '');
+  const candidate = path.posix.normalize(`${normalizedBase}/${filename}`);
+  if (candidate !== normalizedBase && !candidate.startsWith(normalizedBase + '/')) {
+    return null;
+  }
+  return candidate;
+}
+
+/**
  * POST /api/ssh-fix-perm
  * Body: { filename, origin }
  * Runs chmod 777 on the remote file (with sudo fallback if a sudo password is saved
@@ -441,9 +491,10 @@ app.post('/api/ssh-fix-perm', express.json(), async (req, res) => {
   const config = connections.find(c => c.id === origin);
   if (!config) return res.status(404).json({ ok: false, error: 'SSH connection not found' });
 
-  const remoteFilePath = (config.logDir && config.logDir !== '.')
-    ? `${config.logDir.replace(/\/+$/, '')}/${filename}`
-    : filename;
+  const remoteFilePath = buildSafeRemotePath(config.logDir, filename);
+  if (!remoteFilePath) {
+    return res.status(400).json({ ok: false, error: 'Invalid filename or logDir (path traversal rejected)' });
+  }
 
   const result = await fixRemotePermissions(config, remoteFilePath);
   res.json({ ...result, remoteFilePath, host: config.name });
@@ -546,7 +597,10 @@ app.get('/api/files/:filename', async (req, res) => {
       return res.status(404).json({ error: 'SSH Connection configuration not found' });
     }
 
-    const remoteFilePath = (config.logDir && config.logDir !== '.') ? `${config.logDir}/${filename}` : filename;
+    const remoteFilePath = buildSafeRemotePath(config.logDir, filename);
+    if (!remoteFilePath) {
+      return res.status(400).json({ error: 'Invalid filename or logDir (path traversal rejected)' });
+    }
     let permFixAttempted = false;
 
     const openReadStream = () => {
@@ -674,9 +728,20 @@ app.get('/api/ssh-connections', (req, res) => {
  */
 app.post('/api/ssh-connections', express.json(), (req, res) => {
   const { id, name, host, port, username, authType, password, privateKeyContent, privateKeyPath, logDir, sudoPassword } = req.body;
-  
+
   if (!name || !host || !username) {
     return res.status(400).json({ error: 'Name, Host, and Username are required' });
+  }
+
+  // Validate logDir early to prevent storing a misconfigured path that would
+  // later be combined with arbitrary filenames (see buildSafeRemotePath).
+  // Allow "." (home dir default) or absolute POSIX paths without ".." segments.
+  const finalLogDir = logDir || '.';
+  if (finalLogDir !== '.' && (
+    !path.posix.isAbsolute(finalLogDir) ||
+    finalLogDir.split('/').includes('..')
+  )) {
+    return res.status(400).json({ error: 'logDir must be "." or an absolute POSIX path without ".." segments' });
   }
 
   const connections = getSshConnections();
@@ -688,7 +753,7 @@ app.post('/api/ssh-connections', express.json(), (req, res) => {
     port: parseInt(port, 10) || 22,
     username,
     authType: authType || 'password',
-    logDir: logDir || '.',
+    logDir: finalLogDir,
     privateKeyPath: privateKeyPath || ''
   };
 
@@ -1636,7 +1701,13 @@ wss.on('connection', (ws, request) => {
       let sshStream;
 
       conn.on('ready', () => {
-        const remoteFilePath = (config.logDir && config.logDir !== '.') ? `${config.logDir}/${filename}` : filename;
+const remoteFilePath = buildSafeRemotePath(config.logDir, filename);
+      if (!remoteFilePath) {
+        console.log(`[WS] Connection rejected: path traversal attempt on filename "${filename}" with logDir "${config.logDir}"`);
+        ws.close(1008, 'Invalid filename or logDir');
+        conn.end();
+        return;
+      }
         console.log(`[WS] SSH connection ready. Running tail on remote file "${remoteFilePath}"...`);
 
         // Execute tail -f on the remote server
