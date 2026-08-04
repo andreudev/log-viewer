@@ -276,19 +276,36 @@ function saveSshConnections(connections) {
 function testSshConnection(config) {
   return new Promise((resolve, reject) => {
     const conn = new Client();
-    conn.on('ready', () => {
-      conn.end();
-      resolve(true);
-    }).on('error', (err) => {
-      reject(err);
-    }).connect({
-      host: config.host,
-      port: parseInt(config.port, 10) || 22,
-      username: config.username,
-      password: config.password || undefined,
-      privateKey: config.privateKeyContent ? config.privateKeyContent : (config.privateKeyPath ? fs.readFileSync(config.privateKeyPath) : undefined),
-      readyTimeout: 7000
-    });
+    let settled = false;
+    // Outer watchdog: even if the remote host never emits 'ready' or
+    // 'error' (flapping network, silent socket close), the promise
+    // will resolve with a clear error after readyTimeout + 2s grace.
+    const readyTimeout = parseInt(config.readyTimeout, 10) || 7000;
+    const watchdog = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { conn.end(); } catch (e) { /* already closed */ }
+      reject(new Error(`SSH connection timeout after ${readyTimeout + 2000}ms (no 'ready' or 'error' from remote)`));
+    }, readyTimeout + 2000);
+
+    const finishResolve = (val) => { if (!settled) { settled = true; clearTimeout(watchdog); conn.end(); resolve(val); } };
+    const finishReject  = (err) => { if (!settled) { settled = true; clearTimeout(watchdog); try { conn.end(); } catch (e) {} reject(err); } };
+
+    conn.on('ready', () => finishResolve(true))
+        .on('error', finishReject)
+        .on('close', () => {
+          // If we never reached 'ready' and the socket just closed, treat
+          // it as a connection failure so the caller doesn't hang.
+          finishReject(new Error('SSH connection closed before reaching ready state'));
+        })
+        .connect({
+          host: config.host,
+          port: parseInt(config.port, 10) || 22,
+          username: config.username,
+          password: config.password || undefined,
+          privateKey: config.privateKeyContent ? config.privateKeyContent : (config.privateKeyPath ? fs.readFileSync(config.privateKeyPath) : undefined),
+          readyTimeout: readyTimeout
+        });
   });
 }
 
@@ -351,7 +368,19 @@ function fixRemotePermissions(config, remoteFilePath, opts = {}) {
   return new Promise((resolve) => {
     const conn = new Client();
     let settled = false;
-    const done = (result) => { if (!settled) { settled = true; resolve(result); } };
+    // Outer watchdog: caps total wait at readyTimeout + 30s (covers both
+    // plain chmod and the sudo escalation). Without this, a flapping
+    // remote host can hang the promise forever — the original code only
+    // listened to 'ready' and 'error', so a silent socket close left
+    // done() never called.
+    const watchdog = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { conn.end(); } catch (e) { /* already closed */ }
+      console.warn(`[fix-perm] outer watchdog fired on ${config.name} (silent timeout)`);
+      resolve({ ok: false, mode: 'plain', stderr: 'SSH connection timeout (no response from remote)' });
+    }, 30000);
+    const done = (result) => { if (!settled) { settled = true; clearTimeout(watchdog); try { conn.end(); } catch (e) {} resolve(result); } };
 
     const escaped = remoteFilePath.replace(/'/g, "'\\''");
 
@@ -414,6 +443,11 @@ function fixRemotePermissions(config, remoteFilePath, opts = {}) {
     }).on('error', (err) => {
       console.warn(`[fix-perm] SSH error on ${config.name}: ${err.message}`);
       done({ ok: false, mode: 'plain', stderr: err.message });
+    }).on('close', () => {
+      // If the socket closes before 'ready' (e.g. remote host killed
+      // the connection, TCP RST), resolve with a clear error instead
+      // of leaving the promise hanging until the outer watchdog fires.
+      done({ ok: false, mode: 'plain', stderr: 'SSH connection closed before ready' });
     }).connect({
       host: config.host,
       port: parseInt(config.port, 10) || 22,
