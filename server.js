@@ -17,24 +17,104 @@ const SSH_CONFIG_PATH = path.join(__dirname, 'ssh_connections.json');
 
 const ALGORITHM = 'aes-256-cbc';
 const MASTER_KEY_PATH = path.join(__dirname, 'master.key');
+const KEY_LENGTH = 32; // AES-256 requires exactly 32 bytes
 let ENCRYPTION_KEY;
 
-if (fs.existsSync(MASTER_KEY_PATH)) {
-  try {
-    ENCRYPTION_KEY = fs.readFileSync(MASTER_KEY_PATH);
-  } catch (err) {
-    console.error('Failed to read master key file:', err);
-    ENCRYPTION_KEY = crypto.randomBytes(32);
-    fs.writeFileSync(MASTER_KEY_PATH, ENCRYPTION_KEY);
+/**
+ * Loads and validates the master key. Behavior:
+ *   - If master.key exists but cannot be read OR has the wrong length, the
+ *     server refuses to start (process.exit(1)) to prevent silent data loss
+ *     of previously encrypted SSH credentials and API keys in JSON files.
+ *   - If master.key exists and is valid, runs a roundtrip self-test to make
+ *     sure crypto primitives work with this key before continuing.
+ *   - If master.key does NOT exist, generates a new one (first-run case).
+ */
+function loadOrCreateMasterKey() {
+  if (fs.existsSync(MASTER_KEY_PATH)) {
+    let key;
+    try {
+      key = fs.readFileSync(MASTER_KEY_PATH);
+    } catch (err) {
+      console.error('');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(' FATAL: cannot read master.key');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(`  Path: ${MASTER_KEY_PATH}`);
+      console.error(`  Error: ${err.message}`);
+      console.error('');
+      console.error('  LogScope will NOT start to prevent overwriting an');
+      console.error('  unreadable key, which would make all encrypted');
+      console.error('  SSH passwords and API keys permanently undecryptable.');
+      console.error('');
+      console.error('  Fix the file permissions and try again, or restore');
+      console.error('  the key from a backup if it was lost.');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      process.exit(1);
+    }
+
+    if (key.length !== KEY_LENGTH) {
+      console.error('');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(' FATAL: master.key has invalid length');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(`  Path: ${MASTER_KEY_PATH}`);
+      console.error(`  Expected: ${KEY_LENGTH} bytes (AES-256)`);
+      console.error(`  Actual:   ${key.length} bytes`);
+      console.error('');
+      console.error('  LogScope will NOT start to prevent silent rotation');
+      console.error('  of a corrupt key, which would make all encrypted');
+      console.error('  SSH passwords and API keys permanently undecryptable.');
+      console.error('');
+      console.error('  Restore the original key from backup, or delete the');
+      console.error('  file (you will need to re-enter all credentials).');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      process.exit(1);
+    }
+
+    // Roundtrip self-test: confirm crypto works with this key.
+    try {
+      const iv = crypto.randomBytes(16);
+      const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+      const testPlain = 'logscope-master-key-self-test';
+      const encrypted = Buffer.concat([cipher.update(testPlain, 'utf8'), cipher.final()]);
+      const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+      const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+      if (decrypted !== testPlain) {
+        throw new Error('Roundtrip mismatch: decrypted text differs from original');
+      }
+    } catch (err) {
+      console.error('');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(' FATAL: master.key failed self-test');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(`  Path: ${MASTER_KEY_PATH}`);
+      console.error(`  Error: ${err.message}`);
+      console.error('');
+      console.error('  The key was read but crypto operations with it');
+      console.error('  failed. This usually means the key is corrupt.');
+      console.error('');
+      console.error('  Restore the original key from backup, or delete the');
+      console.error('  file (you will need to re-enter all credentials).');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      process.exit(1);
+    }
+
+    return key;
   }
-} else {
-  ENCRYPTION_KEY = crypto.randomBytes(32);
+
+  // First-run case: no master.key exists, create a new one.
+  const key = crypto.randomBytes(KEY_LENGTH);
   try {
-    fs.writeFileSync(MASTER_KEY_PATH, ENCRYPTION_KEY);
+    fs.writeFileSync(MASTER_KEY_PATH, key);
   } catch (err) {
     console.error('Failed to write master key file:', err);
+    // Not fatal: continue in-memory only (will fail on next encrypt
+    // with a clear error thanks to the B5 fix).
   }
+  return key;
 }
+
+ENCRYPTION_KEY = loadOrCreateMasterKey();
 
 function encrypt(text) {
   if (!text) return '';
