@@ -60,6 +60,27 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     correlationId: null,
     quickFilter: 'NONE'
   });
+  /**
+   * Restablece todos los filtros a su estado inicial. Usado por el botón
+   * "Reset" en FiltersPanel y al cargar un nuevo archivo. Mantiene los
+   * archivos seleccionados y la paginación también se reinicia a 1.
+   */
+  const resetFilters = useCallback(() => {
+    setFilters({
+      activeLevels: defaultLevels(),
+      activeService: 'ALL',
+      searchTerm: '',
+      isRegexSearch: false,
+      isPayloadsOnly: false,
+      dateFrom: null,
+      dateTo: null,
+      correlationId: null,
+      quickFilter: 'NONE'
+    });
+    setSortColumn(null);
+    setSortDirection('asc');
+    setCurrentPage(1);
+  }, []);
   const [sortColumn, setSortColumn] = useState<SortColumn>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [currentPage, setCurrentPage] = useState(1);
@@ -999,21 +1020,7 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
       });
       
       localStorage.setItem(`activeFileName_${paneId}`, file.name);
-      setFilters(p => ({
-        ...p,
-        activeService: 'ALL',
-        searchTerm: '',
-        isRegexSearch: false,
-        isPayloadsOnly: false,
-        dateFrom: null,
-        dateTo: null,
-        correlationId: null,
-        activeLevels: defaultLevels(),
-        quickFilter: 'NONE'
-      }));
-      setSortColumn(null);
-      setSortDirection('asc');
-      setCurrentPage(1);
+      resetFilters();
       setActiveLog(null);
       setIsDrawerOpen(false);
     };
@@ -1397,6 +1404,7 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     parsedLogs,
     filters,
     setFilters,
+    resetFilters,
     sortColumn,
     setSortColumn,
     sortDirection,
