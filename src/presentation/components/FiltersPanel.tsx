@@ -4,6 +4,7 @@ import { LogLevel } from '../../domain/models/LogEntry';
 import { defaultLevels } from '../../domain/parsing/parseLogs';
 import { getLevelColor } from '../utils/constants';
 import { SearchableSelect } from './SearchableSelect';
+import { IconButton } from './IconButton';
 import { LogEntry } from '../../domain/models/LogEntry';
 import { FilterPreset } from '../../domain/models/FilterPreset';
 
@@ -211,7 +212,7 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
             width: '100%'
           }}
         >
-          <span className="material-icons-round" style={{ fontSize: '16px' }}>filter_alt_off</span>
+          <span className="material-icons-round" style={{ fontSize: '16px' }} aria-hidden="true">filter_alt_off</span>
           <span>Limpiar filtros ({activeFiltersCount})</span>
         </button>
       )}
@@ -239,11 +240,14 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
             autoComplete="off"
           />
           {filters.searchTerm && (
-            <button 
-              className="clear-search-btn" 
+            <button
+              type="button"
+              className="clear-search-btn"
+              aria-label="Limpiar busqueda"
+              title="Limpiar busqueda"
               onClick={() => { setFilters(p => ({ ...p, searchTerm: '' })); setCurrentPage(1); }}
             >
-              <span className="material-icons-round">close</span>
+              <span className="material-icons-round" aria-hidden="true">close</span>
             </button>
           )}
 
