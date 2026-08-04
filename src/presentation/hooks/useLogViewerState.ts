@@ -672,7 +672,20 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
         if (size > 0 && mtime) {
           const cached = await getLogsFromCache(name, size, mtime, rulesHash, parsersHash);
           if (cached) {
-            cachedParts.push({ name, logs: cached });
+            // Defensive: ensure every cached entry has a stable originalId.
+            // Older cache entries (or those from before the originalId field
+            // existed) won't have it; fall back to the cached id which was the
+            // parser-assigned identity at the time of caching. From now on
+            // originalId is preserved across cache reads, so pins and
+            // annotations keyed by `${originFile}::${originalId}` survive
+            // reloads even when `id` is re-assigned during sort.
+            const stamped = cached.map(entry => {
+              if (entry.originalId === undefined || entry.originalId === null) {
+                return { ...entry, originalId: entry.id };
+              }
+              return entry;
+            });
+            cachedParts.push({ name, logs: stamped });
           } else {
             allLogsCached = false;
             uncachedFileNames.push(name);
@@ -756,7 +769,10 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
           return 0;
         });
 
-        // Recalculate deltas and ids
+        // Recalculate deltas and ids.
+        // NOTE: we only re-assign the *display* `id`. The `originalId` field
+        // (set by the parser or stamped from cache) is the STABLE identity
+        // used by pins/annotations and must never be overwritten here.
         finalLogs.forEach((item, idx) => {
           item.id = idx + 1;
         });
