@@ -901,10 +901,18 @@ app.post('/api/settings', express.json(), (req, res) => {
   if (settings.localLogsDir !== undefined) {
     console.log(`[Settings] Local logs directory updated to: ${LOGS_DIR}`);
 
-    // Disconnect active WS folder watchers to trigger them to reconnect and see new logs folder files
+    // Disconnect active WS folder watchers AND all tail sockets to make
+    // them reconnect and see the new logs folder. Without closing the
+    // tail sockets, existing tails keep their byte position from the old
+    // directory and may stream the new file from byte 0 (or mix content
+    // from two different inodes if the filename collides).
     for (const client of wss.clients) {
-      if (client.isFilesSocket && client.readyState === WebSocket.OPEN) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      if (client.isFilesSocket) {
         console.log('[Settings] Closing files WebSocket to trigger reconnection...');
+        client.close(1000, 'Directory changed');
+      } else if (client.isTailSocket) {
+        console.log(`[Settings] Closing tail WebSocket for ${client.isRemoteTail ? 'remote' : 'local'} file to force re-open against new directory...`);
         client.close(1000, 'Directory changed');
       }
     }
@@ -1637,6 +1645,16 @@ wss.on('connection', (ws, request) => {
       console.log(`[WS] Connection rejected: Invalid filename "${filename}"`);
       ws.close(1008, 'Invalid or missing filename');
       return;
+    }
+
+    // Mark this socket as a tail connection so the settings handler can
+    // close all tails when the user changes localLogsDir. Without this,
+    // existing tails keep their byte position from the old directory
+    // and would stream the new file from byte 0 (or worse, mix content
+    // from two different inodes if the filename collides).
+    ws.isTailSocket = true;
+    if (origin !== 'local') {
+      ws.isRemoteTail = true;
     }
 
     if (origin === 'local') {
