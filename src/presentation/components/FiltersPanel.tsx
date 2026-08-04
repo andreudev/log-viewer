@@ -18,6 +18,7 @@ import { LogTimeline } from './filters/LogTimeline';
 interface FiltersPanelProps {
   filters: FilterState;
   setFilters: React.Dispatch<React.SetStateAction<FilterState>>;
+  resetFilters: () => void;
   setCurrentPage: React.Dispatch<React.SetStateAction<number>>;
   uniqueServices: string[];
   handleLevelClick: (level: LogLevel) => void;
@@ -55,6 +56,7 @@ interface FiltersPanelProps {
 export const FiltersPanel: React.FC<FiltersPanelProps> = ({
   filters,
   setFilters,
+  resetFilters,
   setCurrentPage,
   uniqueServices,
   handleLevelClick,
@@ -181,6 +183,37 @@ export const FiltersPanel: React.FC<FiltersPanelProps> = ({
           setFilters={setFilters}
           setCurrentPage={setCurrentPage}
         />
+      )}
+
+      {/* Reset filters button — only visible when at least one filter is active.
+          Avoids the "stuck with no results, can't figure out why" UX dead-end. */}
+      {activeFiltersCount > 0 && (
+        <button
+          type="button"
+          className="reset-filters-btn"
+          onClick={resetFilters}
+          aria-label={`Limpiar ${activeFiltersCount} filtros activos`}
+          title={`Limpiar ${activeFiltersCount} filtros y volver a la vista sin filtros`}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '6px',
+            padding: '6px 10px',
+            background: 'var(--bg-panel, rgba(255,255,255,0.05))',
+            border: '1px solid var(--border-color, rgba(255,255,255,0.15))',
+            borderRadius: '6px',
+            color: 'var(--text-primary, #e0e0e0)',
+            cursor: 'pointer',
+            fontSize: '12px',
+            fontWeight: 500,
+            transition: 'background 120ms ease, border-color 120ms ease',
+            width: '100%'
+          }}
+        >
+          <span className="material-icons-round" style={{ fontSize: '16px' }}>filter_alt_off</span>
+          <span>Limpiar filtros ({activeFiltersCount})</span>
+        </button>
       )}
       
       {/* Primary search row */}
