@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useLogViewerState } from './presentation/hooks/useLogViewerState';
 import { useKeyboardShortcuts } from './presentation/hooks/useKeyboardShortcuts';
 import { Sidebar } from './presentation/components/Sidebar';
@@ -9,8 +9,6 @@ import { CompareModal } from './presentation/components/CompareModal';
 import { RulesModal } from './presentation/components/RulesModal';
 import { ShortcutsModal } from './presentation/components/ShortcutsModal';
 import { AnalyticsDashboard } from './presentation/components/AnalyticsDashboard';
-import { getLevelColor } from './presentation/utils/constants';
-import { LogLevel } from './domain/models/LogEntry';
 import { ParserModal } from './presentation/components/ParserModal';
 import { ErrorBoundary } from './presentation/components/ErrorBoundary';
 import { ProcessingOverlay } from './presentation/components/ProcessingOverlay';
@@ -29,36 +27,10 @@ export function App() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isSessionDiffOpen, setIsSessionDiffOpen] = useState(false);
 
-  const KPI_CARDS = useMemo(() => [
-    { 
-      icon: 'receipt_long', 
-      label: 'Logs Parseados', 
-      value: state.stats.total, 
-      sub: state.selectedFiles.length > 0 ? `${state.selectedFiles.length} archivos seleccionados` : 'Ningún archivo', 
-      cls: 'blue' 
-    },
-    { 
-      icon: 'error_outline', 
-      label: 'Errores Detectados', 
-      value: state.stats.errorCount, 
-      sub: state.stats.total ? `${((state.stats.errorCount / state.stats.total) * 100).toFixed(1)}% del total` : '0%', 
-      cls: 'red' 
-    },
-    { 
-      icon: 'warning_amber', 
-      label: 'Advertencias (Warn)', 
-      value: state.stats.warnCount, 
-      sub: 'Alertas en ejecución', 
-      cls: 'yellow' 
-    },
-    { 
-      icon: 'dns', 
-      label: 'Servicios Únicos', 
-      value: state.stats.uniqueServices, 
-      sub: `${state.stats.uniqueServices} endpoints`, 
-      cls: 'purple' 
-    }
-  ], [state.stats, state.selectedFiles]);
+  // Dashboard de salud eliminado: el foco es ver logs en vivo, no contar
+  // cuantos hay. buildStats/distribution en useLogViewerState siguen
+  // disponibles por si se quiere mostrar en otro lado (ej: una vista de
+  // analytics separada), pero no se renderizan aqui.
 
   // Vim & Gmail like Keyboard Shortcuts hook
   useKeyboardShortcuts({
@@ -124,67 +96,6 @@ export function App() {
             {isMobileSidebarOpen ? 'close' : 'menu'}
           </span>
         </button>
-        {/* Metric panels grid */}
-        <section className="dashboard-grid">
-          {KPI_CARDS.map((card, i) => (
-            <div key={i} className={`kpi-card gradient-${card.cls}`}>
-              <div className="card-icon">
-                <span className="material-icons-round">{card.icon}</span>
-              </div>
-              <div className="card-info">
-                <span className="card-label">{card.label}</span>
-                <h2>{card.value}</h2>
-                <span className="card-subtext">{card.sub}</span>
-              </div>
-            </div>
-          ))}
-        </section>
-
-        {/* Level distribution graph */}
-        {state.parsedLogs.length > 0 && state.activeTab === 'feed' && (
-          <section className="distribution-section">
-            <div className="distribution-header">
-              <span>DISTRIBUCIÓN POR NIVELES</span>
-              <div className="distribution-legend">
-                {state.distribution.map(d => (
-                  <div key={d.level} className="legend-item">
-                    <div 
-                      className="legend-color" 
-                      style={{ backgroundColor: `hsl(${getLevelColor(d.level)})` }}
-                    ></div>
-                    <span>{d.level}: <b>{d.count}</b></span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="distribution-bar">
-              {state.distribution.length === 0 ? (
-                <div className="empty-bar-msg">Sin datos para la selección actual</div>
-              ) : (
-                state.distribution.map(d => {
-                  const pct = ((d.count / state.filteredLogs.length) * 100).toFixed(1);
-                  return (
-                    <div 
-                      key={d.level} 
-                      className="dist-segment" 
-                      style={{ 
-                        width: `${pct}%`, 
-                        backgroundColor: `hsl(${getLevelColor(d.level)})` 
-                      }} 
-                      data-tooltip={`${d.level}: ${d.count} (${pct}%)`} 
-                      onClick={() => { 
-                        const s = new Set<LogLevel>(); 
-                        s.add(d.level); 
-                        state.setFilters(p => ({ ...p, activeLevels: s })); 
-                        state.setCurrentPage(1); 
-                      }} 
-                    />
-                  );
-                })
-              )}
-            </div>
-          </section>
-        )}
 
         {/* Filters and Tab Navigation bar */}
         {state.parsedLogs.length > 0 && state.activeTab === 'feed' && (
