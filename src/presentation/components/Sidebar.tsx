@@ -92,7 +92,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           width: '100%',
           flexShrink: 0
         }}>
-          <button 
+          <button
+            type="button"
+            aria-label="Activar panel izquierdo"
+            aria-pressed={activePane === 'left'}
             onClick={() => setActivePane && setActivePane('left')}
             style={{
               flex: 1,
@@ -109,7 +112,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             Pane Izquierdo
           </button>
-          <button 
+          <button
+            type="button"
+            aria-label="Activar panel derecho"
+            aria-pressed={activePane === 'right'}
             onClick={() => setActivePane && setActivePane('right')}
             style={{
               flex: 1,
@@ -148,11 +154,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* 1. File Explorer Button */}
         <button
+          type="button"
           onClick={() => setIsFileExplorerOpen(true)}
+          aria-label="Abrir explorador de archivos"
           className={`sidebar-menu-item ${isFileExplorerOpen ? 'active' : ''}`}
           style={{ position: 'relative' }}
         >
-          <span className="material-icons-round" style={{ fontSize: '20px', color: 'var(--accent-solid)' }}>folder_open</span>
+          <span className="material-icons-round" aria-hidden="true" style={{ fontSize: '20px', color: 'var(--accent-solid)' }}>folder_open</span>
           <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
             <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Explorador de Archivos</span>
             <span style={{ fontSize: '9.5px', color: 'var(--text-secondary)', marginTop: '2px' }}>Seleccionar y combinar logs</span>
@@ -178,10 +186,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* 2. Global Search Button */}
         <button
+          type="button"
           onClick={() => setIsGlobalSearchOpen(true)}
+          aria-label="Abrir busqueda global entre archivos"
           className={`sidebar-menu-item ${isGlobalSearchOpen ? 'active' : ''}`}
         >
-          <span className="material-icons-round" style={{ fontSize: '20px', color: '#61afef' }}>travel_explore</span>
+          <span className="material-icons-round" aria-hidden="true" style={{ fontSize: '20px', color: '#61afef' }}>travel_explore</span>
           <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
             <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Búsqueda Global</span>
             <span style={{ fontSize: '9.5px', color: 'var(--text-secondary)', marginTop: '2px' }}>Escanear todos los archivos</span>
@@ -190,10 +200,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* 3. Pinned Logs Button */}
         <button
+          type="button"
           onClick={() => setIsPinnedLogsOpen(true)}
+          aria-label="Abrir logs fijados"
           className={`sidebar-menu-item ${isPinnedLogsOpen ? 'active' : ''}`}
         >
-          <span className="material-icons-round" style={{ fontSize: '20px', color: '#e5c07b' }}>push_pin</span>
+          <span className="material-icons-round" aria-hidden="true" style={{ fontSize: '20px', color: '#e5c07b' }}>push_pin</span>
           <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
             <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Logs Fijados</span>
             <span style={{ fontSize: '9.5px', color: 'var(--text-secondary)', marginTop: '2px' }}>Registros favoritos</span>
@@ -219,10 +231,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* 3.5 Analyst Notes Button */}
         <button
+          type="button"
           onClick={() => setIsNotesManagerOpen(true)}
+          aria-label="Abrir gestor de notas de analista"
           className={`sidebar-menu-item ${isNotesManagerOpen ? 'active' : ''}`}
         >
-          <span className="material-icons-round" style={{ fontSize: '20px', color: '#e5c07b' }}>note_alt</span>
+          <span className="material-icons-round" aria-hidden="true" style={{ fontSize: '20px', color: '#e5c07b' }}>note_alt</span>
           <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
             <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Gestor de Notas</span>
             <span style={{ fontSize: '9.5px', color: 'var(--text-secondary)', marginTop: '2px' }}>Reportes masivos de observaciones</span>
@@ -248,10 +262,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* 3.6 Session Diff Button */}
         <button
+          type="button"
           onClick={openSessionDiff}
+          aria-label="Comparar sesiones (diff entre paneles)"
           className="sidebar-menu-item"
         >
-          <span className="material-icons-round" style={{ fontSize: '20px', color: '#c678dd' }}>difference</span>
+          <span className="material-icons-round" aria-hidden="true" style={{ fontSize: '20px', color: '#c678dd' }}>difference</span>
           <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
             <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Comparar Sesiones (Diff)</span>
             <span style={{ fontSize: '9.5px', color: 'var(--text-secondary)', marginTop: '2px' }}>Diferencias de logs izquierdo y derecho</span>
@@ -260,10 +276,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* 4. Settings Button */}
         <button
+          type="button"
           onClick={openSettingsModal}
+          aria-label="Abrir ajustes del sistema"
           className="sidebar-menu-item"
         >
-          <span className="material-icons-round" style={{ fontSize: '20px', color: '#98c379' }}>settings</span>
+          <span className="material-icons-round" aria-hidden="true" style={{ fontSize: '20px', color: '#98c379' }}>settings</span>
           <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
             <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Ajustes del Sistema</span>
             <span style={{ fontSize: '9.5px', color: 'var(--text-secondary)', marginTop: '2px' }}>SSH y carpeta de logs</span>
