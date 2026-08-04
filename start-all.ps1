@@ -6,6 +6,15 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
+# Asegurar que node/npm esten en el PATH.
+# Sin esto, PowerShell desde VS Code o sesiones SSH heredan un PATH
+# incompleto y Start-Process falla con "%1 no es una aplicacion Win32 valida"
+# al intentar ejecutar 'node' o 'npm.cmd' como archivos sin extension .exe.
+$nodeBin = Join-Path $env:ProgramFiles 'nodejs'
+if (Test-Path $nodeBin) {
+    $env:Path = "$nodeBin;$env:Path"
+}
+
 $logDir = Join-Path $projectRoot '.runtime-logs'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
 
