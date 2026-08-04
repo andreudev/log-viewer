@@ -510,6 +510,28 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     tailBufferLimitRef.current = tailBufferLimit;
   }, [tailBufferLimit]);
 
+  // The following refs allow the tail WebSocket callback to read the latest
+  // values WITHOUT re-subscribing every time the user edits a rule, saves
+  // an annotation, toggles desktop notifications, or changes the webhook
+  // config. Re-subscribing tears down all live tails and reopens them,
+  // which (a) drops in-flight lines from the server, (b) re-fires the
+  // initial `tail -n 200` causing duplicate lines, and (c) wastes a
+  // reconnect roundtrip on every keystroke in the annotation textarea.
+  const rulesRef = useRef(rules);
+  useEffect(() => { rulesRef.current = rules; }, [rules]);
+
+  const annotationsRef = useRef(annotations);
+  useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
+
+  const desktopAlertsEnabledRef = useRef(desktopAlertsEnabled);
+  useEffect(() => { desktopAlertsEnabledRef.current = desktopAlertsEnabled; }, [desktopAlertsEnabled]);
+
+  const webhookEnabledRef = useRef(webhookEnabled);
+  useEffect(() => { webhookEnabledRef.current = webhookEnabled; }, [webhookEnabled]);
+
+  const dispatchWebhookAlertRef = useRef(dispatchWebhookAlert);
+  useEffect(() => { dispatchWebhookAlertRef.current = dispatchWebhookAlert; }, [dispatchWebhookAlert]);
+
   useEffect(() => {
     if (!isTailing) {
       // User toggled tail off -> drop every channel
@@ -531,8 +553,9 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
               entry.originFile = sub.key;
               entry.originalId = entry.id;
 
-              // Apply severity promotion rules
-              for (const rule of rules) {
+              // Apply severity promotion rules (read latest from ref to avoid
+              // re-subscribing on every rule edit).
+              for (const rule of rulesRef.current) {
                 if (rule.enabled && (entry.message || '').includes(rule.pattern)) {
                   entry.level = rule.targetLevel;
                   entry.customBadge = rule.customBadge;
@@ -540,16 +563,16 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
                 }
               }
 
-              // Inject annotation if already exists
+              // Inject annotation if already exists (read from ref).
               const noteKey = `${entry.originFile}::${entry.originalId}`;
-              const savedAnn = annotations[noteKey];
+              const savedAnn = annotationsRef.current[noteKey];
               if (savedAnn) {
                 entry.annotation = typeof savedAnn === 'object' && savedAnn !== null ? (savedAnn as any).text : (savedAnn as string);
               }
 
               // Trigger desktop notification if backgrounded and is critical severity or customBadge
               if (
-                desktopAlertsEnabled &&
+                desktopAlertsEnabledRef.current &&
                 document.visibilityState === 'hidden' &&
                 (entry.level === 'ERROR' || entry.level === 'WARN' || entry.customBadge)
               ) {
@@ -571,10 +594,10 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
 
               // Trigger webhook alert if enabled and is critical severity or customBadge
               if (
-                webhookEnabled &&
+                webhookEnabledRef.current &&
                 (entry.level === 'ERROR' || entry.level === 'WARN' || entry.customBadge)
               ) {
-                dispatchWebhookAlert(entry);
+                dispatchWebhookAlertRef.current(entry);
               }
             });
 
@@ -623,7 +646,12 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     return () => {
       disconnectTail();
     };
-  }, [isTailing, selectedFiles.join('|'), parsers, rules, annotations, desktopAlertsEnabled, webhookEnabled, dispatchWebhookAlert]);
+    // IMPORTANT: only re-subscribe when the subscription set itself changes.
+    // rules/annotations/desktopAlertsEnabled/webhookEnabled/dispatchWebhookAlert
+    // are read inside the callback via refs (rulesRef, annotationsRef, etc.)
+    // so editing them does NOT tear down live tails. Adding them here would
+    // cause a reconnect storm on every annotation keystroke or rule toggle.
+  }, [isTailing, selectedFiles.join('|'), parsers]);
 
   // Effect to merge pausedLogs when resuming tailing
   useEffect(() => {
