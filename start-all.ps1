@@ -88,7 +88,12 @@ $backend = Start-Process -FilePath 'node' `
     -PassThru -WindowStyle Hidden
 
 Write-Host "[start-all] Iniciando Vite (npm run dev) en puerto 5173..."
-$frontend = Start-Process -FilePath 'npm' `
+# Importante: usar 'npm.cmd' en lugar de 'npm'. Start-Process en PowerShell
+# NO consulta los PATHEXT automaticamente, asi que 'npm' (sin extension)
+# falla con "%1 no es una aplicacion Win32 valida" aunque npm.cmd exista
+# en el mismo directorio (ej en C:\nvm4w\nodejs\ donde npm es solo un
+# script bash, no un .exe). npm.cmd SI es ejecutable por Start-Process.
+$frontend = Start-Process -FilePath 'npm.cmd' `
     -ArgumentList 'run','dev' `
     -WorkingDirectory $projectRoot `
     -RedirectStandardOutput $frontendOut `
