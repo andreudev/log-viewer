@@ -18,9 +18,27 @@ export async function fetchFiles(): Promise<LogFileMeta[]> {
 export async function fetchFileContent(filename: string, origin = 'local'): Promise<string> {
   const response = await fetch(`/api/files/${encodeURIComponent(filename)}?origin=${encodeURIComponent(origin)}`);
   if (!response.ok) {
-    throw new Error('Failed to fetch file content');
+    // Error estructurado: el caller puede distinguir 404 (archivo borrado)
+    // de otros errores (server caido, permisos, etc).
+    const err: FetchFileError = new Error(
+      response.status === 404
+        ? `Archivo no encontrado: ${filename}`
+        : `Error ${response.status} al leer ${filename}`
+    ) as FetchFileError;
+    err.status = response.status;
+    err.filename = filename;
+    err.origin = origin;
+    err.isNotFound = response.status === 404;
+    throw err;
   }
   return response.text();
+}
+
+export interface FetchFileError extends Error {
+  status?: number;
+  filename?: string;
+  origin?: string;
+  isNotFound?: boolean;
 }
 
 export interface SystemSettings {

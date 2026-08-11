@@ -49,6 +49,53 @@ export function App() {
 
   return (
     <div className={`app-container ${state.theme} ${isMobileSidebarOpen ? 'mobile-sidebar-open' : ''}`}>
+      {/* Toast global: archivos no encontrados, etc. */}
+      {state.missingFilesToast && (
+        <div
+          className="global-toast global-toast-error"
+          role="alert"
+          aria-live="assertive"
+          style={{
+            position: 'fixed',
+            top: 16,
+            right: 16,
+            zIndex: 9999,
+            background: 'rgba(224, 108, 117, 0.95)',
+            color: '#fff',
+            padding: '12px 16px',
+            borderRadius: '8px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            maxWidth: '480px',
+            fontSize: '13px',
+            fontWeight: 500,
+          }}
+        >
+          <span className="material-icons-round" aria-hidden="true" style={{ fontSize: '20px' }}>
+            error_outline
+          </span>
+          <span style={{ flex: 1 }}>{state.missingFilesToast}</span>
+          <button
+            type="button"
+            onClick={() => state.setMissingFilesToast(null)}
+            aria-label="Cerrar notificacion"
+            title="Cerrar"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#fff',
+              cursor: 'pointer',
+              padding: '2px',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            <span className="material-icons-round" style={{ fontSize: '18px' }}>close</span>
+          </button>
+        </div>
+      )}
       {isMobileSidebarOpen && (
         <div 
           className="sidebar-overlay-mobile"

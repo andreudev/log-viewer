@@ -476,6 +476,13 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
   const [exportSuccess, setExportSuccess] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
 
+  // Archivos seleccionados que el server reporto como no encontrados (404).
+  // Se usa para auto-quitarlos de la seleccion y mostrar un toast.
+  // (bug visto: capa-media-avt2-logger.log borrado del disco -> loop de
+  //  404 cada vez que React re-corre loadAndMergeFiles).
+  const [missingFiles, setMissingFiles] = useState<string[]>([]);
+  const [missingFilesToast, setMissingFilesToast] = useState<string | null>(null);
+
   // Sync visual theme
   useEffect(() => {
     document.body.className = theme;
@@ -866,20 +873,61 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
         });
         finalLogs = combined;
       } else {
-        // Fetch contents for uncached files only, parse them, cache them, and merge with cached ones
-        const contents = await Promise.all(
+        // Fetch contents for uncached files only, parse them, cache them, and merge with cached ones.
+        // Si algun archivo devuelve 404 (borrado/renombrado del disco), lo
+        // capturamos individualmente para NO abortar el Promise.all y poder
+        // auto-quitarlo de la seleccion + mostrar toast.
+        const contents: { name: string; fileKey: string; content: string }[] = [];
+        const notFound: string[] = [];
+
+        await Promise.all(
           fileNames.map(async name => {
             if (uploaded[name]) {
-              return { name, content: uploaded[name] };
+              contents.push({ name, fileKey: name, content: uploaded[name] });
+              return;
             }
             const parts = name.split('::');
             const origin = parts.length > 1 ? parts[0] : 'local';
             const filename = parts.length > 1 ? parts[1] : name;
 
-            const content = await fetchFileContent(filename, origin);
-            return { name: filename, fileKey: name, content };
+            try {
+              const content = await fetchFileContent(filename, origin);
+              contents.push({ name: filename, fileKey: name, content });
+            } catch (err: any) {
+              if (err && err.isNotFound) {
+                notFound.push(name);
+              } else {
+                // Re-throw errores que NO son 404 para que el catch externo
+                // los loguee como antes.
+                throw err;
+              }
+            }
           })
         );
+
+        // Auto-quitar archivos 404 de la seleccion + toast. Solo lo hacemos
+        // si efectivamente hubo notFound (evita loops en StrictMode).
+        if (notFound.length > 0) {
+          setMissingFiles(prev => {
+            // Evitar duplicados: solo agregar los nuevos
+            const next = Array.from(new Set([...prev, ...notFound]));
+            return next;
+          });
+          setMissingFilesToast(
+            `${notFound.length === 1 ? 'Archivo no encontrado' : `${notFound.length} archivos no encontrados`}: ${notFound.map(f => f.includes('::') ? f.split('::')[1] : f).join(', ')}. Se quitó de la selección.`
+          );
+          setTimeout(() => setMissingFilesToast(null), 6000);
+
+          // Quitar de selectedFiles
+          setSelectedFiles(prev => prev.filter(f => !notFound.includes(f)));
+
+          // Si no quedan archivos, vaciar parsedLogs para que la UI no muestre
+          // datos viejos de una seleccion que ya no existe.
+          if (fileNames.length === notFound.length) {
+            setParsedLogs([]);
+            return;
+          }
+        }
 
         // Parse all using the background Web Worker
         const withDeltas = await parseWithWorker(
@@ -986,6 +1034,21 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
   useEffect(() => {
     loadAndMergeFiles(selectedFiles, uploadedFiles, rules, parsers);
   }, [selectedFiles, uploadedFiles, rules, parsers, loadAndMergeFiles]);
+
+  // Limpiar archivos de missingFiles cuando reaparecen en la lista del server.
+  // Esto pasa cuando el folder watcher detecta que el archivo fue recreado.
+  useEffect(() => {
+    if (missingFiles.length === 0) return;
+    const fileNamesOnServer = new Set(files.map(f => f.name));
+    const stillMissing = missingFiles.filter(name => {
+      const filename = name.includes('::') ? name.split('::')[1] : name;
+      // Si el filename esta de vuelta en la lista, ya no esta missing
+      return !fileNamesOnServer.has(filename);
+    });
+    if (stillMissing.length !== missingFiles.length) {
+      setMissingFiles(stillMissing);
+    }
+  }, [files, missingFiles]);
 
 
   // Live folder sync via WebSocket
@@ -1581,6 +1644,10 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     setIsCompareModalOpen,
     exportSuccess,
     setExportSuccess,
+    missingFiles,
+    setMissingFiles,
+    missingFilesToast,
+    setMissingFilesToast,
     focusedIndex,
     setFocusedIndex,
     uniqueServices,
