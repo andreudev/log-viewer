@@ -38,7 +38,7 @@ function tryParseJsonRecord(
       return { obj, linesConsumed: 0, raw: trimmed };
     }
   } catch {
-    // sigue intentando como multilinea
+    // sigue intentando
   }
 
   // Caso 2: JSON multilinea (objeto cortado en varias lineas fisicas)
@@ -55,6 +55,89 @@ function tryParseJsonRecord(
     }
   }
   return null;
+}
+
+/**
+ * Variante que devuelve TODOS los JSON concatenados en una linea.
+ * Caso 3: el log real viene como  `{"timestamp":...} {"timestamp":...} {...}`
+ * donde cada objeto esta separado por un espacio (no newline). El primer
+ * JSON.parse falla porque sobra el segundo objeto, pero podemos splitear
+ * por '}{' (con cuidado de preservar las llaves) y parsear cada chunk.
+ *
+ * Devuelve array vacio si no se pudo parsear nada.
+ */
+function tryParseMultipleJsonConcatenated(
+  line: string,
+  followUps: string[]
+): { obj: Record<string, unknown>; linesConsumed: number; raw: string }[] {
+  // Juntamos la linea + followUps para cubrir el caso en que un objeto
+  // JSON este cortado entre lineas y concatenado con el siguiente.
+  const fullText = [line, ...followUps].join('');
+  const trimmed = fullText.trim();
+  if (!trimmed.startsWith('{') || !trimmed.includes('"timestamp"')) return [];
+
+  // Buscamos TODAS las ocurrencias de '}{' (objeto cerrado seguido de abierto)
+  // o '{' al inicio. Cada match delimita un objeto JSON.
+  const results: { obj: Record<string, unknown>; linesConsumed: number; raw: string }[] = [];
+
+  // Split inteligente: encontrar cada '}{' y separar ahi.
+  // Estrategia: encontrar pares balanceados de { } usando un contador.
+  const objs: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escape = false;
+  for (let i = 0; i < trimmed.length; i++) {
+    const c = trimmed[i];
+    if (escape) { escape = false; continue; }
+    if (c === '\\') { escape = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (c === '}') {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        objs.push(trimmed.substring(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  // Si quedo algo sin cerrar (depth > 0), descartamos ese fragmento.
+  // Cada obj parseado individualmente cuenta 1 linea consumida proporcional.
+  for (const candidate of objs) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (typeof parsed === 'object' && parsed !== null) {
+        // Calcular cuantas lineas fisicas consume este candidato.
+        // Es proporcional al tamano: si el candidato esta en la linea N
+        // cubre lineas hasta donde termina.
+        const consumedLines = countNewlinesIn(fullText, candidate);
+        results.push({ obj: parsed, linesConsumed: consumedLines, raw: candidate });
+      }
+    } catch {
+      // ignora candidatos invalidos
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Cuenta cuantos saltos de linea hay en `fullText` hasta el final de
+ * `candidate`. Util para calcular linesConsumed.
+ */
+function countNewlinesIn(fullText: string, candidate: string): number {
+  const idx = fullText.indexOf(candidate);
+  if (idx < 0) return 0;
+  const upTo = fullText.substring(0, idx + candidate.length);
+  let count = 0;
+  for (let i = 0; i < upTo.length; i++) {
+    if (upTo[i] === '\n') count++;
+  }
+  return count;
 }
 
 /**
@@ -221,6 +304,11 @@ export function parseLogs(text: string, parsers: ParserConfig[] = DEFAULT_PARSER
     // Lineas que arrancan con `{"timestamp":` se parsean como JSON
     // antes que cualquier regex. Esto evita que caigan al fallback
     // "SystemLogger" y muestra timestamp/level/service reales.
+    //
+    // Caso 1: 1 JSON por linea (JSONL normal)
+    // Caso 2: 1 JSON cortado en varias lineas fisicas
+    // Caso 3: N JSON concatenados con espacios en 1 sola linea
+    //   (caso del log de capa-media: "{...} {...} {...}")
     const trimmedLine = line.trim();
     if (trimmedLine.startsWith('{') && trimmedLine.includes('"timestamp"')) {
       const followUps = lines.slice(lineIdx + 1, lineIdx + 21);
@@ -231,11 +319,31 @@ export function parseLogs(text: string, parsers: ParserConfig[] = DEFAULT_PARSER
         if (entry) {
           entry.raw = parsed.raw;
           currentEntry = entry;
-          // Avanzamos el indice si consumimos lineas de continuation
           lineIdx += parsed.linesConsumed;
           continue;
         }
-        // Si buildEntryFromJson devolvio null (sin timestamp), caemos al flujo normal
+      }
+
+      // Caso 3 fallback: varios JSON concatenados con espacios.
+      // El JSON simple fallo (probablemente porque hay un segundo objeto
+      // pegado). Intentamos separar por '}{' balanceado y parsear cada uno.
+      const concatenated = tryParseMultipleJsonConcatenated(line, followUps);
+      if (concatenated.length > 0) {
+        if (currentEntry) logEntries.push(currentEntry);
+        let consumed = 0;
+        for (const { obj, raw, linesConsumed } of concatenated) {
+          const entry = buildEntryFromJson(obj, ++logCounter);
+          if (entry) {
+            entry.raw = raw;
+            logEntries.push(entry);
+            // Tomar el mayor linesConsumed (es la cantidad de lineas
+            // fisicas que ocupa TODA la linea concatenada).
+            if (linesConsumed > consumed) consumed = linesConsumed;
+          }
+        }
+        currentEntry = null;
+        lineIdx += consumed;
+        continue;
       }
     }
 
