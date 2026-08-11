@@ -226,6 +226,10 @@ function buildEntryFromJson(obj: Record<string, unknown>, id: number): LogEntry 
   // Estrategia: tomar el PRIMER sub-campo con valor string no vacio.
   // Antes serializabamos todo el objeto como message, lo que producia
   // strings como '{"Respuesta WebService":"..."}' (literal) en la UI.
+  // Tambien evitamos mostrar JSON literal cuando message es un objeto
+  // sin sub-campos string (ej: {someObj:{...}} o {} o solo arrays).
+  // En su lugar mostramos un resumen legible como "[payload: 2 fields]"
+  // o "<key>: <preview>" segun el caso.
   let message = '';
   const msg = obj.message;
   if (typeof msg === 'string') {
@@ -251,11 +255,34 @@ function buildEntryFromJson(obj: Record<string, unknown>, id: number): LogEntry 
       }
     }
     if (!found) {
-      // Sub-campos son objetos/arrays: serializamos para no perder info.
-      try {
-        message = JSON.stringify(m);
-      } catch {
-        message = String(m);
+      // Sub-campos son objetos/arrays o el message es {}.
+      // Evitamos mostrar JSON literal crudo en la UI. En su lugar
+      // mostramos un resumen legible.
+      const keys = Object.keys(m);
+      if (keys.length === 0) {
+        // message es {} -> nada que mostrar
+        message = '';
+      } else {
+        // Construimos un resumen: "<key1>: <preview>, <key2>: <preview>"
+        const parts: string[] = [];
+        for (const k of keys.slice(0, 3)) {
+          const v = m[k];
+          let preview: string;
+          if (v === null || v === undefined) {
+            preview = 'null';
+          } else if (Array.isArray(v)) {
+            preview = `[${v.length} items]`;
+          } else if (typeof v === 'object') {
+            preview = `{${Object.keys(v as object).length} fields}`;
+          } else if (typeof v === 'number' || typeof v === 'boolean') {
+            preview = String(v);
+          } else {
+            preview = String(v).slice(0, 30);
+          }
+          parts.push(`${k}: ${preview}`);
+        }
+        if (keys.length > 3) parts.push(`+${keys.length - 3} more`);
+        message = `[payload] ${parts.join(', ')}`;
       }
     }
   }
