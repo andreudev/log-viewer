@@ -213,23 +213,51 @@ function buildEntryFromJson(obj: Record<string, unknown>, id: number): LogEntry 
       : undefined;
   const service = endpoint ? `EP ${endpoint}` : className;
 
-  // message es un objeto { Detalle: "..." } en este formato
+  // message es un objeto con sub-campos variables segun el tipo de log.
+  // En el log real de capa-media pueden venir como keys:
+  //   - "Detalle"              (el mas comun)
+  //   - "Respuesta WebService" (XML/JSON devuelto por SOAP/REST)
+  //   - "URL" / "URL llamada"  (URL invocada)
+  //   - "Parámetros petición"  (body enviado)
+  //   - "Parámetros llamada Repositorio Login"
+  //   - "decodedBody"          (request body descifrado)
+  //   - "Peticion del usuario" (placeholder del controller)
+  //
+  // Estrategia: tomar el PRIMER sub-campo con valor string no vacio.
+  // Antes serializabamos todo el objeto como message, lo que producia
+  // strings como '{"Respuesta WebService":"..."}' (literal) en la UI.
   let message = '';
   const msg = obj.message;
-  if (msg && typeof msg === 'object') {
+  if (typeof msg === 'string') {
+    message = msg;
+  } else if (msg && typeof msg === 'object') {
     const m = msg as Record<string, unknown>;
-    if (typeof m.Detalle === 'string') {
+    // Prioridad: Detalle > cualquier otro sub-campo string no vacio.
+    let found = false;
+    if (typeof m.Detalle === 'string' && m.Detalle.length > 0) {
       message = m.Detalle;
-    } else {
-      // Otros sub-campos no contemplados: serializamos para no perder info
+      found = true;
+    }
+    if (!found) {
+      for (const key of Object.keys(m)) {
+        const v = m[key];
+        if (typeof v === 'string' && v.length > 0) {
+          // Prefijamos la key para que el usuario sepa qué tipo de
+          // mensaje es (ej "URL: http://...", "Respuesta: <inicio_sesion>")
+          message = `${key}: ${v}`;
+          found = true;
+          break;
+        }
+      }
+    }
+    if (!found) {
+      // Sub-campos son objetos/arrays: serializamos para no perder info.
       try {
         message = JSON.stringify(m);
       } catch {
         message = String(m);
       }
     }
-  } else if (typeof msg === 'string') {
-    message = msg;
   }
 
   const finalLevel = elevateLevelForErrors(level, message);
