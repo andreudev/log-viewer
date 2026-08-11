@@ -10,9 +10,33 @@ Set-Location $projectRoot
 # Sin esto, PowerShell desde VS Code o sesiones SSH heredan un PATH
 # incompleto y Start-Process falla con "%1 no es una aplicacion Win32 valida"
 # al intentar ejecutar 'node' o 'npm.cmd' como archivos sin extension .exe.
-$nodeBin = Join-Path $env:ProgramFiles 'nodejs'
-if (Test-Path $nodeBin) {
-    $env:Path = "$nodeBin;$env:Path"
+#
+# Buscamos node en multiples ubicaciones comunes porque hay 3 formas
+# tipicas de instalar Node en Windows y el script debe funcionar en
+# cualquiera:
+#   1. Instalador oficial MSI:    C:\Program Files\nodejs\
+#   2. nvm-windows:              C:\nvm4w\nodejs\ (symlink al current)
+#                                 o   C:\Users\<user>\AppData\Roaming\nvm\
+#   3. Manual / portable:         C:\nodejs\, C:\tools\nodejs\, etc.
+#
+# Si ya hay node en el PATH actual del proceso, lo respetamos (prioridad).
+$existingNode = Get-Command node -ErrorAction SilentlyContinue
+if (-not $existingNode) {
+    $candidatePaths = @(
+        (Join-Path $env:ProgramFiles 'nodejs'),
+        'C:\nvm4w\nodejs',
+        'C:\nodejs',
+        (Join-Path $env:LOCALAPPDATA 'nvm\current'),          # nvm-windows user install
+        (Join-Path $env:APPDATA 'nvm\current'),               # variant
+        'C:\Program Files (x86)\nodejs'                       # 32-bit fallback
+    )
+    foreach ($p in $candidatePaths) {
+        if ($p -and (Test-Path $p)) {
+            Write-Host "[start-all] node encontrado en: $p"
+            $env:Path = "$p;$env:Path"
+            break
+        }
+    }
 }
 
 $logDir = Join-Path $projectRoot '.runtime-logs'
