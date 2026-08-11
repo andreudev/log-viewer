@@ -501,10 +501,22 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
 
   // Live WebSocket Tailing Synchronizer - supports multiple selected files
   // (e.g. two `capa-media-avt-logger.log` from different SSH origins at once).
+  //
+  // Formato de `selectedFiles`:
+  //   - Local:  "capa-media-logger.log"            (sin prefijo)
+  //   - SSH:    "<originId>::capa-media-logger.log"
+  // Bug visto: el codigo viejo asumia SIEMPRE formato "origin::filename"
+  // y caia a origin='local' solo si el split devolvia un array vacio.
+  // Para un archivo local el split devuelve [filename] (length 1), asi
+  // que origin quedaba = filename y filename = ''. Resultado: el WS de
+  // tail se conectaba a /ws/tail?filename=&origin=<archivo.log> y nunca
+  // llegaba nada. Mismo patron que loadAndMergeFiles y getLogsFromCache
+  // usan correctamente con `parts.length > 1`.
   const tailSubscriptions = selectedFiles.map(key => {
-    const [origin, ...rest] = key.split('::');
-    const filename = rest.join('::'); // handles names that contain "::"
-    return { key, origin: origin || 'local', filename };
+    const parts = key.split('::');
+    const origin = parts.length > 1 ? parts[0] : 'local';
+    const filename = parts.length > 1 ? parts.slice(1).join('::') : key;
+    return { key, origin, filename };
   });
 
   const isTailPausedRef = useRef(isTailPaused);
