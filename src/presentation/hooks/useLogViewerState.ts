@@ -47,6 +47,13 @@ const PAGE_SIZE = 200;
 
 export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
   const [files, setFiles] = useState<LogFileMeta[]>([]);
+  // Ref que siempre apunta al ultimo valor de `files`. Usado por
+  // loadAndMergeFiles para evitar que se recreen cuando el folder
+  // watcher (WS) manda un update: el array es nuevo pero el contenido
+  // suele ser identico. Antes esto disparaba un fetch del archivo cada
+  // vez que fs.watch detectaba un cambio en disco -> loop de fetches.
+  const filesRef = useRef<LogFileMeta[]>(files);
+  filesRef.current = files;
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [parsedLogs, setParsedLogs] = useState<LogEntry[]>([]);
   const [filters, setFilters] = useState<FilterState>({
@@ -841,7 +848,10 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
           const parts = name.split('::');
           const origin = parts.length > 1 ? parts[0] : 'local';
           const filename = parts.length > 1 ? parts[1] : name;
-          const meta = files.find(f => f.name === filename && (f.origin || 'local') === origin);
+          // Usar filesRef (no files) para no recrear este callback cada vez
+          // que el folder watcher actualiza la lista. Asi NO re-fetcheamos
+          // el archivo en cada cambio del disco (que era el loop).
+          const meta = filesRef.current.find(f => f.name === filename && (f.origin || 'local') === origin);
           if (meta) {
             size = meta.sizeBytes;
             mtime = meta.modifiedAt;
@@ -960,7 +970,8 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
             const parts = name.split('::');
             const origin = parts.length > 1 ? parts[0] : 'local';
             const filename = parts.length > 1 ? parts[1] : name;
-            const meta = files.find(f => f.name === filename && (f.origin || 'local') === origin);
+            // Mismo motivo que arriba: usar filesRef para no depender de files.
+            const meta = filesRef.current.find(f => f.name === filename && (f.origin || 'local') === origin);
             if (meta) {
               size = meta.sizeBytes;
               mtime = meta.modifiedAt;
@@ -1040,12 +1051,18 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
     } catch (error) {
       console.error("Error loading and merging files using worker/cache:", error);
     }
-  }, [parseWithWorker, files]);
+  }, [parseWithWorker]);
 
   // Sync loaded logs when files, uploaded files, or rules change
+  // Re-fetch automatico SOLO cuando cambia la seleccion, las reglas o
+  // parsers. NO dependemos de `files` ni de `loadAndMergeFiles` para
+  // evitar que el folder watcher (que manda updates constantes) re-dispare
+  // fetchFileContent en bucle. loadAndMergeFiles lee files via filesRef
+  // y mantiene el callback estable (deps: solo parseWithWorker).
   useEffect(() => {
     loadAndMergeFiles(selectedFiles, uploadedFiles, rules, parsers);
-  }, [selectedFiles, uploadedFiles, rules, parsers, loadAndMergeFiles]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFiles, uploadedFiles, rules, parsers]);
 
   // Limpiar archivos de missingFiles cuando reaparecen en la lista del server.
   // Esto pasa cuando el folder watcher detecta que el archivo fue recreado.
@@ -1066,7 +1083,28 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
   // Live folder sync via WebSocket
   useEffect(() => {
     connectFilesWatcher((updatedFiles) => {
-      setFiles(updatedFiles);
+      // Deduplicar: solo setFiles si la lista cambio realmente.
+      // fs.watch puede emitir eventos duplicados cuando hay multiples
+      // operaciones en el mismo directorio, y el server hace readdir
+      // cada vez -> nuevos arrays aunque el contenido sea identico.
+      setFiles(prev => {
+        if (prev.length !== updatedFiles.length) return updatedFiles;
+        // Comparacion shallow por nombre + origin + size + mtime
+        // (suficiente para detectar cambios reales y evitar re-renders).
+        for (let i = 0; i < prev.length; i++) {
+          const a = prev[i];
+          const b = updatedFiles[i];
+          if (
+            a.name !== b.name ||
+            a.sizeBytes !== b.sizeBytes ||
+            a.modifiedAt !== b.modifiedAt ||
+            (a.origin || 'local') !== (b.origin || 'local')
+          ) {
+            return updatedFiles;
+          }
+        }
+        return prev; // sin cambios: misma referencia, no re-render
+      });
     });
     return () => {
       disconnectFilesWatcher();
@@ -1093,23 +1131,67 @@ export function useLogViewerState(paneId: 'left' | 'right' = 'left') {
         const saved = localStorage.getItem(`selectedFiles_${paneId}`);
         if (saved) {
           initialSelected = JSON.parse(saved);
+          // Validar contra la lista del server: si un archivo guardado ya
+          // no existe en el server, lo quitamos. Esto evita que selectedFiles
+          // contenga fantasmas que disparan 404 en cada render.
+          if (Array.isArray(initialSelected)) {
+            initialSelected = initialSelected.filter(name => {
+              // Para formato "origin::filename" validar origin+name
+              if (name.includes('::')) {
+                const [origin, ...rest] = name.split('::');
+                const filename = rest.join('::');
+                return f.some(file =>
+                  file.name === filename && (file.origin || 'local') === origin
+                );
+              }
+              // Formato local: solo filename
+              return f.some(file => file.name === name && (file.origin || 'local') === 'local');
+            });
+          } else {
+            initialSelected = [];
+          }
         }
       } catch (e) {
         console.error("Error loading selectedFiles from localStorage", e);
       }
 
+      // Si la seleccion guardada quedo vacia despues de validar, intentar
+      // con activeFileName (compatibilidad hacia atras, version vieja del app).
+      // Pero SOLO si matchea exactamente con origin+name (no solo name) para
+      // evitar pisar la seleccion SSH cuando hay duplicados.
       if (initialSelected.length === 0) {
         const lastActiveName = localStorage.getItem(`activeFileName_${paneId}`);
         if (lastActiveName) {
-          const found = f.find(file => file.name === lastActiveName);
-          if (found) {
-            initialSelected = [found.name];
+          // Intentar matchear con formato "origin::filename" primero
+          if (lastActiveName.includes('::')) {
+            const [origin, ...rest] = lastActiveName.split('::');
+            const filename = rest.join('::');
+            const found = f.find(file =>
+              file.name === filename && (file.origin || 'local') === origin
+            );
+            if (found) initialSelected = [lastActiveName];
+          } else {
+            // Matchear por name SOLO si hay un unico archivo con ese nombre
+            // (asi no pisamos la eleccion SSH del usuario).
+            const matches = f.filter(file => file.name === lastActiveName);
+            if (matches.length === 1) {
+              const m = matches[0];
+              const key = (m.origin && m.origin !== 'local')
+                ? `${m.origin}::${m.name}`
+                : m.name;
+              initialSelected = [key];
+            }
           }
         }
       }
 
       if (initialSelected.length === 0 && f.length > 0) {
-        initialSelected = [f[0].name];
+        // Como ultimo recurso, tomar el primer archivo.
+        const first = f[0];
+        const key = (first.origin && first.origin !== 'local')
+          ? `${first.origin}::${first.name}`
+          : first.name;
+        initialSelected = [key];
       }
 
       if (initialSelected.length > 0) {
