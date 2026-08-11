@@ -1612,7 +1612,14 @@ wss.on('connection', (ws, request) => {
     // Send immediately on connection
     sendFilesList();
 
-    // Watch LOGS_DIR for changes and push updates to the client
+    // Watch LOGS_DIR for changes and push updates to the client.
+    // fs.watch en Windows es ruidoso: emite eventos por cualquier operacion
+    // (rename, change, atributos) y se dispara incluso cuando el archivo
+    // tailed se esta escribiendo. Con debounce 300ms eso resultaba en
+    // una rafaga de sendFilesList -> setFiles en el cliente -> loop de
+    // re-renders. Subimos a 2s para que un write sostenido no genere
+    // updates constantes. Si necesitas ver un archivo nuevo rapido,
+    // el cliente tiene boton de "Refresh" en el sidebar.
     let fileWatcherDebounce;
     let dirWatcher;
     try {
@@ -1621,7 +1628,7 @@ wss.on('connection', (ws, request) => {
         fileWatcherDebounce = setTimeout(() => {
           console.log('[WS-Files] Logs directory changed, pushing updated list to client.');
           sendFilesList();
-        }, 300);
+        }, 2000);
       });
     } catch (err) {
       console.error('[WS-Files] Error starting directory watcher:', err);
