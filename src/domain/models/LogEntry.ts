@@ -20,6 +20,13 @@ export interface LogEntry {
    */
   endpoint?: string;
   /**
+   * Java/Spring stacktrace extracted from the `exception` field of JSON
+   * logs (logs at ERROR/SEVERE level often include it). Rendered in
+   * the bottom detail panel in a separate collapsible section so the
+   * huge stack doesn't overwhelm the regular message.
+   */
+  exception?: string;
+  /**
    * Stable identity for pins/annotations across cache reloads.
    *
    * `id` is a *display index* that gets reassigned every time the merged
