@@ -27,6 +27,7 @@ export const BottomDetailPanel: React.FC<BottomDetailPanelProps> = ({
   onResize,
 }) => {
   const [copied, setCopied] = useState<'fields' | 'raw' | null>(null);
+  const [exceptionOpen, setExceptionOpen] = useState(true);
 
   const formattedJson = useMemo(() => {
     if (!activeLog?.raw) return null;
@@ -281,6 +282,99 @@ export const BottomDetailPanel: React.FC<BottomDetailPanelProps> = ({
             >
               {formattedJson || activeLog.raw}
             </pre>
+          </>
+        )}
+
+        {activeLog.exception && (
+          <>
+            <div
+              style={{
+                marginTop: '14px',
+                marginBottom: '4px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <button
+                onClick={() => setExceptionOpen(v => !v)}
+                title="Expandir/contraer stacktrace"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  color: '#e06c75',
+                  fontWeight: 600,
+                  fontSize: '12px',
+                }}
+              >
+                <span
+                  className="material-icons-round"
+                  style={{
+                    fontSize: '14px',
+                    transform: exceptionOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.15s ease',
+                  }}
+                >
+                  chevron_right
+                </span>
+                EXCEPCIÓN
+                <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '11px' }}>
+                  ({activeLog.exception.length.toLocaleString()} chars)
+                </span>
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(activeLog.exception!);
+                    setCopied('raw');
+                    setTimeout(() => setCopied(null), 1500);
+                  } catch { /* noop */ }
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  height: '22px',
+                  padding: '0 6px',
+                  borderRadius: '4px',
+                  fontSize: '10px',
+                  fontWeight: 500,
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  border: '1px solid var(--border-color)',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                }}
+              >
+                <span className="material-icons-round" style={{ fontSize: '12px' }}>
+                  content_copy
+                </span>
+                Copiar
+              </button>
+            </div>
+            {exceptionOpen && (
+              <pre
+                className="long-token-wrap"
+                style={{
+                  margin: 0,
+                  padding: '10px 12px',
+                  background: 'rgba(224, 108, 117, 0.06)',
+                  border: '1px solid rgba(224, 108, 117, 0.25)',
+                  borderRadius: '6px',
+                  color: '#ffb3b3',
+                  maxHeight: '320px',
+                  overflow: 'auto',
+                  fontSize: '11px',
+                  lineHeight: 1.4,
+                }}
+              >
+                {activeLog.exception}
+              </pre>
+            )}
           </>
         )}
       </div>

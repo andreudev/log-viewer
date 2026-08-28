@@ -289,6 +289,15 @@ function buildEntryFromJson(obj: Record<string, unknown>, id: number): LogEntry 
 
   const finalLevel = elevateLevelForErrors(level, message);
 
+  // Capturar el stacktrace de Java/Spring si viene en el JSON.
+  // El log real de capa-media incluye "exception":"com.banrural..."
+  // seguido de un \t en cada frame del stacktrace. Sin este campo,
+  // el stacktrace se pierde completamente del analisis.
+  const exception =
+    typeof obj.exception === 'string' && obj.exception.trim()
+      ? obj.exception
+      : undefined;
+
   return {
     id,
     timestamp,
@@ -300,6 +309,7 @@ function buildEntryFromJson(obj: Record<string, unknown>, id: number): LogEntry 
     message,
     raw: typeof obj.__raw === 'string' ? obj.__raw : JSON.stringify(obj),
     endpoint,
+    exception,
     originalId: id,
   };
 }
