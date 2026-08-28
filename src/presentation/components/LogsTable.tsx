@@ -5,6 +5,7 @@ import { SortColumn, SortDirection } from '../../application/usecases/applyFilte
 import { getFileColorStyle, highlightText } from '../utils/helpers';
 import { getLevelColor } from '../utils/constants';
 import { AnnotationPopover } from './AnnotationPopover';
+import { RawLiveView } from './RawLiveView';
 
 interface LogsTableProps {
   filteredLogs: LogEntry[];
@@ -78,6 +79,9 @@ export const LogsTable: React.FC<LogsTableProps> = ({
   const isMultiFileActive = useMemo(() => selectedFiles.length > 1, [selectedFiles]);
   const virtuosoRef = useRef<any>(null);
   const [activeAnnotationTarget, setActiveAnnotationTarget] = useState<{ log: LogEntry; rect: DOMRect } | null>(null);
+  // Toggle between parsed table view and raw monospace text view.
+  // Default: 'parsed'. User toggles via button in the feed header.
+  const [displayMode, setDisplayMode] = useState<'parsed' | 'raw'>('parsed');
 
   const handleHeaderClick = (col: NonNullable<SortColumn>) => {
     if (sortColumn === col) {
@@ -225,10 +229,41 @@ export const LogsTable: React.FC<LogsTableProps> = ({
               <span>{isSplitMode ? 'Unir Pantalla' : 'Dividir Pantalla'}</span>
             </button>
           )}
+
+          {/* Raw view toggle: shows the file content as plain text (no parser). */}
+          <button
+            className={`secondary-button ${displayMode === 'raw' ? 'active-accent-btn' : ''}`}
+            onClick={() => setDisplayMode(displayMode === 'raw' ? 'parsed' : 'raw')}
+            title="Alternar entre vista parseada (tabla) y vista raw (texto plano del archivo)"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              height: '28px',
+              padding: '0 10px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              fontWeight: 500,
+              background: displayMode === 'raw' ? 'var(--accent-bg)' : 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid ' + (displayMode === 'raw' ? 'var(--accent-solid)' : 'var(--border-color)'),
+              color: displayMode === 'raw' ? 'var(--accent-solid)' : 'var(--text-primary)',
+              cursor: 'pointer',
+              transition: 'background 0.2s, border-color 0.2s'
+            }}
+          >
+            <span className="material-icons-round" style={{ fontSize: '14px' }}>
+              {displayMode === 'raw' ? 'table_view' : 'code'}
+            </span>
+            <span>{displayMode === 'raw' ? 'Ver Tabla' : 'Raw'}</span>
+          </button>
         </div>
       </div>
-      
-      {filteredLogs.length === 0 ? (
+
+      {displayMode === 'raw' ? (
+        // MODO RAW: texto plano sin parsear. Útil para ver líneas que el
+        // parser no entiende, copiar fragmentos crudos, etc.
+        <RawLiveView selectedFiles={selectedFiles} />
+      ) : filteredLogs.length === 0 ? (
         <div className={`feed-viewport ${wrapLines ? 'wrap-lines' : ''}`} id="feed-viewport">
           <div className="zero-state">
             <span className="material-icons-round zero-icon">
