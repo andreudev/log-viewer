@@ -4,7 +4,7 @@ import { useKeyboardShortcuts } from './presentation/hooks/useKeyboardShortcuts'
 import { Sidebar } from './presentation/components/Sidebar';
 import { FiltersPanel } from './presentation/components/FiltersPanel';
 import { LogsTable } from './presentation/components/LogsTable';
-import { DetailsDrawer } from './presentation/components/DetailsDrawer';
+import { BottomDetailPanel } from './presentation/components/BottomDetailPanel';
 import { CompareModal } from './presentation/components/CompareModal';
 import { RulesModal } from './presentation/components/RulesModal';
 import { ShortcutsModal } from './presentation/components/ShortcutsModal';
@@ -18,6 +18,7 @@ import { SessionDiffModal } from './presentation/components/SessionDiffModal';
 export function App() {
   const [isSplitMode, setIsSplitMode] = useState(false);
   const [activePane, setActivePane] = useState<'left' | 'right'>('left');
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(320);
 
   const leftState = useLogViewerState('left');
   const rightState = useLogViewerState('right');
@@ -339,30 +340,18 @@ export function App() {
               </ErrorBoundary>
             </div>
           )}
+
+          <ErrorBoundary fallbackTitle="Error en el panel de detalles">
+            <BottomDetailPanel
+              isOpen={state.isDrawerOpen}
+              setIsOpen={state.setIsDrawerOpen}
+              activeLog={state.activeLog}
+              height={bottomPanelHeight}
+              onResize={setBottomPanelHeight}
+            />
+          </ErrorBoundary>
         </section>
       </main>
-
-      <ErrorBoundary fallbackTitle="Error en el panel de detalles">
-        <DetailsDrawer 
-          isDrawerOpen={state.isDrawerOpen}
-          setIsDrawerOpen={state.setIsDrawerOpen}
-          activeLog={state.activeLog}
-          pinnedKeys={state.pinnedKeys}
-          togglePin={state.togglePin}
-          compareQueue={state.compareQueue}
-          setCompareQueue={state.setCompareQueue}
-          exportSuccess={state.exportSuccess}
-          setExportSuccess={state.setExportSuccess}
-          activeDiagnosis={state.activeDiagnosis}
-          copyText={state.copyText}
-          searchTerm={state.filters.searchTerm}
-          isRegexSearch={state.filters.isRegexSearch}
-          setFilters={state.setFilters}
-          setCurrentPage={state.setCurrentPage}
-          saveAnnotation={state.saveAnnotation}
-          systemSettings={state.systemSettings}
-        />
-      </ErrorBoundary>
 
       <CompareModal 
         compareQueue={state.compareQueue}
