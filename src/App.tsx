@@ -19,6 +19,10 @@ export function App() {
   const [isSplitMode, setIsSplitMode] = useState(false);
   const [activePane, setActivePane] = useState<'left' | 'right'>('left');
   const [bottomPanelHeight, setBottomPanelHeight] = useState(320);
+  // Display mode (parsed table vs raw text) is shared across all panes so
+  // toggling it once in one pane keeps both panes in sync and survives
+  // file changes, split mode toggles, etc.
+  const [displayMode, setDisplayMode] = useState<'parsed' | 'raw'>('parsed');
 
   const leftState = useLogViewerState('left');
   const rightState = useLogViewerState('right');
@@ -237,7 +241,7 @@ export function App() {
                       <span className="material-icons-round">view_sidebar</span> Panel Izquierdo {activePane === 'left' && "(Activo)"}
                     </div>
                   )}
-                  <LogsTable 
+                  <LogsTable
                     filteredLogs={leftState.filteredLogs}
                     pageLogs={leftState.pageLogs}
                     parsedLogs={leftState.parsedLogs}
@@ -270,6 +274,8 @@ export function App() {
                     downloadFilteredLogs={leftState.downloadFilteredLogs}
                     isSplitMode={isSplitMode}
                     setIsSplitMode={setIsSplitMode}
+                    displayMode={displayMode}
+                    setDisplayMode={setDisplayMode}
                   />
                 </div>
 
@@ -281,7 +287,7 @@ export function App() {
                     <div className="pane-header-indicator">
                       <span className="material-icons-round">view_sidebar</span> Panel Derecho {activePane === 'right' && "(Activo)"}
                     </div>
-                    <LogsTable 
+                    <LogsTable
                       filteredLogs={rightState.filteredLogs}
                       pageLogs={rightState.pageLogs}
                       parsedLogs={rightState.parsedLogs}
@@ -314,6 +320,8 @@ export function App() {
                       downloadFilteredLogs={rightState.downloadFilteredLogs}
                       isSplitMode={isSplitMode}
                       setIsSplitMode={setIsSplitMode}
+                      displayMode={displayMode}
+                      setDisplayMode={setDisplayMode}
                     />
                   </div>
                 )}

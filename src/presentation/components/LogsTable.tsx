@@ -40,6 +40,14 @@ interface LogsTableProps {
   downloadFilteredLogs: () => void;
   isSplitMode?: boolean;
   setIsSplitMode?: (mode: boolean) => void;
+  /**
+   * Whether the feed is showing the parsed table or the raw monospace
+   * text. Controlled by App.tsx (one toggle per session) so that:
+   *  - both panes in split mode stay in sync
+   *  - the mode survives file changes, split toggles, and remounts
+   */
+  displayMode: 'parsed' | 'raw';
+  setDisplayMode: (mode: 'parsed' | 'raw') => void;
 }
 
 export const LogsTable: React.FC<LogsTableProps> = ({
@@ -74,14 +82,13 @@ export const LogsTable: React.FC<LogsTableProps> = ({
   autoScrollTail,
   downloadFilteredLogs,
   isSplitMode = false,
-  setIsSplitMode
+  setIsSplitMode,
+  displayMode,
+  setDisplayMode,
 }) => {
   const isMultiFileActive = useMemo(() => selectedFiles.length > 1, [selectedFiles]);
   const virtuosoRef = useRef<any>(null);
   const [activeAnnotationTarget, setActiveAnnotationTarget] = useState<{ log: LogEntry; rect: DOMRect } | null>(null);
-  // Toggle between parsed table view and raw monospace text view.
-  // Default: 'parsed'. User toggles via button in the feed header.
-  const [displayMode, setDisplayMode] = useState<'parsed' | 'raw'>('parsed');
 
   const handleHeaderClick = (col: NonNullable<SortColumn>) => {
     if (sortColumn === col) {
