@@ -241,7 +241,7 @@ export const RawLiveView: React.FC<RawLiveViewProps> = ({ selectedFiles, onFollo
           </button>
         </div>
       </div>
-      <pre ref={preRef} className="raw-pre">
+      <pre ref={preRef} className="raw-pre long-token-wrap">
         {renderContent()}
       </pre>
     </div>
