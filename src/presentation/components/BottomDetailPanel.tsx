@@ -218,14 +218,13 @@ export const BottomDetailPanel: React.FC<BottomDetailPanelProps> = ({
           MESSAGE
         </div>
         <pre
+          className="long-token-wrap"
           style={{
             margin: 0,
             padding: '10px 12px',
             background: 'rgba(255, 255, 255, 0.03)',
             border: '1px solid var(--border-color)',
             borderRadius: '6px',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
             color: 'var(--text-primary)',
           }}
         >
@@ -270,14 +269,13 @@ export const BottomDetailPanel: React.FC<BottomDetailPanelProps> = ({
               </button>
             </div>
             <pre
+              className="long-token-wrap"
               style={{
                 margin: 0,
                 padding: '10px 12px',
                 background: 'rgba(255, 255, 255, 0.03)',
                 border: '1px solid var(--border-color)',
                 borderRadius: '6px',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
                 color: formattedJson ? '#9ec1ff' : 'var(--text-primary)',
               }}
             >
@@ -302,12 +300,20 @@ const DetailField: React.FC<{ label: string; value: string; accent?: string }> =
       gap: '8px',
       padding: '3px 0',
       borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+      overflowWrap: 'anywhere',
     }}
   >
     <span style={{ color: 'var(--text-secondary)', fontSize: '11px', textTransform: 'uppercase' }}>
       {label}
     </span>
-    <span style={{ color: accent || 'var(--text-primary)', wordBreak: 'break-word' }}>
+    <span
+      style={{
+        color: accent || 'var(--text-primary)',
+        overflowWrap: 'anywhere',
+        wordBreak: 'break-word',
+        minWidth: 0,
+      }}
+    >
       {value || '-'}
     </span>
   </div>
